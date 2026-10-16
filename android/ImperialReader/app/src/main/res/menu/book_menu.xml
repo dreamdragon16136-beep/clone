@@ -6,4 +6,6 @@
         app:actionViewClass="androidx.appcompat.widget.SearchView"/>
     <item android:id="@+id/action_webview" android:icon="@drawable/ic_public" android:title="Open in WebView"
         app:showAsAction="never"/>
+    <item android:id="@+id/action_genre_search" android:title="Search by genre"
+        android:checkable="true" app:showAsAction="never"/>
 </menu>

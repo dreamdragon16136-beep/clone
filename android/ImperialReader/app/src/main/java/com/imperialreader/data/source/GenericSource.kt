@@ -322,8 +322,7 @@ class GenericSource(
             val visited = mutableSetOf(d.location())
             var pages = 1
             while (true) {
-                val next = d.selectFirst("a[rel=next], ul.pagination a:matchesOwn(^(Next|›|»|>)\$), a.next")
-                    ?.absUrl("href")?.takeIf { it.isNotBlank() && it != d.location() } ?: break
+                val next = nextNovelChapterPage(d, site) ?: break
                 if (host(next) != site) throw IOException("Novel chapter pagination left the source site")
                 if (!visited.add(next)) throw IOException("Novel chapter pagination contains a loop")
                 if (pages >= MAX_NOVEL_CHAPTER_PAGES) {
@@ -340,16 +339,127 @@ class GenericSource(
         return list.filter { it.chapterNumber >= 0f }.sortedByDescending { it.chapterNumber } + list.filter { it.chapterNumber < 0f }
     }
 
+    private fun nextNovelChapterPage(doc: Document, site: String?): String? {
+        val currentUrl = doc.location()
+        val current = runCatching { URI(currentUrl) }.getOrNull() ?: return null
+        val identity = chapterPageIdentity(current) ?: return null
+        val currentPage = paginationNumber(currentUrl) ?: 1
+        return doc.select(
+            "a[rel=next][href], ul.pagination a[href], .pagination a[href], .page-numbers[href], " +
+                "nav[aria-label] a[href], .pages a[href], a[aria-label][href]"
+        ).asSequence()
+            .filter { anchor ->
+                val label = "${anchor.text()} ${anchor.attr("aria-label")} ${anchor.className()}"
+                val nav = anchor.parents().firstOrNull { it.tagName() == "nav" }
+                val isPageLink = anchor.attr("rel").contains("next", ignoreCase = true) ||
+                    anchor.hasClass("next") || anchor.hasClass("page-numbers") ||
+                    label.contains("next", ignoreCase = true) ||
+                    anchor.parents().any { it.hasClass("pagination") || it.hasClass("pages") } ||
+                    nav?.attr("aria-label")?.contains("pagination", ignoreCase = true) == true
+                isPageLink && (nav == null || nav.attr("aria-label").isBlank() ||
+                    nav.attr("aria-label").contains("pagination", ignoreCase = true))
+            }
+            .mapNotNull { anchor ->
+                val uri = runCatching { URI(anchor.absUrl("href")) }.getOrNull() ?: return@mapNotNull null
+                if (host(uri.toString()) != site || chapterPageIdentity(uri) != identity) return@mapNotNull null
+                val number = paginationNumber(uri.toString()) ?: return@mapNotNull null
+                if (number <= currentPage) return@mapNotNull null
+                number to uri.toString()
+            }
+            .minByOrNull { it.first }?.second
+    }
+
+    private fun paginationNumber(url: String): Int? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        val query = uri.rawQuery.orEmpty().split('&').associate {
+            it.substringBefore('=') to it.substringAfter('=', "").toIntOrNull()
+        }
+        query["page"]?.let { return it }
+        query["paged"]?.let { return it }
+        query["p"]?.let { return it }
+        return Regex("""(?:^|/)page/(\d+)(?:/|$)""")
+            .find(uri.path.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
+    }
+
     /** Readable HTML of a novel chapter: the container with the most paragraph text. */
     suspend fun chapterText(url: String): String {
-        val d = doc(url)
-        d.select("script, style, noscript, iframe, nav, header, footer, aside, form, .ads, .ad, [class*=advert], [id*=advert]").remove()
-        val best = d.select("div, article, section, main").maxByOrNull { el ->
-            el.children().asSequence().filter { it.tagName() == "p" }.sumOf { it.text().length }
+        val current = runCatching { URI(url) }.getOrNull()
+            ?: throw IOException("Invalid novel chapter address")
+        val site = current.host?.removePrefix("www.")?.lowercase()
+            ?: throw IOException("Invalid novel chapter address")
+        val visited = mutableSetOf<String>()
+        val pages = mutableListOf<String>()
+        var nextUrl: String? = url
+        var pageCount = 0
+        while (nextUrl != null) {
+            if (host(nextUrl) != site) throw IOException("Novel chapter pagination left the source site")
+            if (!visited.add(nextUrl)) throw IOException("Novel chapter pagination contains a loop")
+            if (++pageCount > MAX_NOVEL_TEXT_PAGES) {
+                throw IOException("Novel chapter exceeds the safe limit of $MAX_NOVEL_TEXT_PAGES pages")
+            }
+            val d = doc(nextUrl)
+            val next = nextNovelTextPage(d, nextUrl)
+            d.select("script, style, noscript, iframe, nav, header, footer, aside, form, .ads, .ad, [class*=advert], [id*=advert]").remove()
+            val best = d.select("div, article, section, main").maxByOrNull { el ->
+                el.children().asSequence().filter { it.tagName() == "p" }.sumOf { it.text().length }
+            } ?: throw IOException("Couldn't find the chapter text on this page")
+            if (best.select("p").size < 2 || best.text().isBlank()) {
+                throw IOException("Couldn't find readable chapter text on this page")
+            }
+            pages += best.html()
+            nextUrl = next
         }
-        val html = best?.html().orEmpty()
-        if (best == null || best.select("p").size < 2) throw IOException("Couldn't find the chapter text on this page")
-        return html
+        if (pages.isEmpty()) throw IOException("The source returned no readable chapter pages")
+        return pages.joinToString("\n")
+    }
+
+    private fun nextNovelTextPage(doc: Document, currentUrl: String): String? {
+        val current = runCatching { URI(currentUrl) }.getOrNull() ?: return null
+        val currentIdentity = chapterPageIdentity(current) ?: return null
+        val currentNumber = chapterPageNumber(current) ?: 1
+        val candidates = doc.select(
+            "a[rel=next][href], .chapter-pagination a[href], .chapter-content-pagination a[href], " +
+                ".pagination a[href], .page-links a[href], a.next_page[href], a[aria-label][href]"
+        ).asSequence()
+            .filter { anchor ->
+                val label = "${anchor.text()} ${anchor.attr("aria-label")} ${anchor.className()}"
+                anchor.hasAttr("rel") && anchor.attr("rel").contains("next", ignoreCase = true) ||
+                    anchor.hasClass("next") || anchor.hasClass("next_page") ||
+                    label.contains("next page", ignoreCase = true) ||
+                    anchor.parents().any { it.hasClass("pagination") || it.hasClass("chapter-pagination") || it.hasClass("page-links") }
+            }
+            .map { it.absUrl("href") }
+            .mapNotNull { raw -> runCatching { URI(raw) }.getOrNull() }
+            .filter { uri ->
+                uri.host?.removePrefix("www.")?.equals(current.host?.removePrefix("www."), true) == true &&
+                    chapterPageIdentity(uri) == currentIdentity &&
+                    (chapterPageNumber(uri) ?: 1) > currentNumber
+            }
+            .distinctBy { it.toString() }
+            .minByOrNull { chapterPageNumber(it) ?: Int.MAX_VALUE }
+        return candidates?.toString()
+    }
+
+    private fun chapterPageIdentity(uri: URI): String? {
+        val path = uri.path.orEmpty().trimEnd('/')
+        if (path.isBlank()) return null
+        val cleanPath = path.replace(Regex("""(?i)/(?:page|pages)/\d+$"""), "")
+        val query = uri.rawQuery.orEmpty().split('&')
+            .filterNot { it.substringBefore('=').lowercase() in setOf("page", "paged", "p", "page_num") }
+            .sorted()
+            .joinToString("&")
+        return "${uri.host?.removePrefix("www.")?.lowercase()}:$cleanPath?$query"
+    }
+
+    private fun chapterPageNumber(uri: URI): Int? {
+        val query = uri.rawQuery.orEmpty().split('&').mapNotNull { pair ->
+            val key = pair.substringBefore('=').lowercase()
+            val value = pair.substringAfter('=', "")
+            if (key in setOf("page", "paged", "p", "page_num")) value.toIntOrNull() else null
+        }.firstOrNull()
+        if (query != null) return query
+        return Regex("""(?i)/(?:page|pages)/(\d+)/?$""")
+            .find(uri.path.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
     }
 
     // ------------------------------------------------------------------ pages
@@ -384,5 +494,6 @@ class GenericSource(
 
     private companion object {
         const val MAX_NOVEL_CHAPTER_PAGES = 1000
+        const val MAX_NOVEL_TEXT_PAGES = 100
     }
 }

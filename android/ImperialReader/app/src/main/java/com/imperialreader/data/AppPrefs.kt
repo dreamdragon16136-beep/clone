@@ -26,6 +26,9 @@ class AppPrefs(context: Context) {
         const val READER_LTR = 0
         const val READER_RTL = 1
         const val READER_VERTICAL = 2
+        const val FILTER_NONE = 0
+        const val FILTER_INCLUDE = 1
+        const val FILTER_EXCLUDE = 2
     }
 
     /** 0 = left-to-right, 1 = right-to-left, 2 = vertical/webtoon (stored as string by ListPreference). */
@@ -127,6 +130,26 @@ class AppPrefs(context: Context) {
     var filterDownloaded: Boolean
         get() = sp.getBoolean("filter_downloaded", false)
         set(v) = sp.edit { putBoolean("filter_downloaded", v) }
+
+    private fun libraryFilterMode(key: String, legacyKey: String): Int =
+        sp.getInt(key, if (sp.getBoolean(legacyKey, false)) FILTER_INCLUDE else FILTER_NONE)
+            .coerceIn(FILTER_NONE, FILTER_EXCLUDE)
+
+    private fun setLibraryFilterMode(key: String, value: Int) {
+        sp.edit { putInt(key, value.coerceIn(FILTER_NONE, FILTER_EXCLUDE)) }
+    }
+
+    var unreadFilterMode: Int
+        get() = libraryFilterMode("library_filter_unread_mode", "filter_unread")
+        set(value) = setLibraryFilterMode("library_filter_unread_mode", value)
+
+    var downloadedFilterMode: Int
+        get() = libraryFilterMode("library_filter_downloaded_mode", "filter_downloaded")
+        set(value) = setLibraryFilterMode("library_filter_downloaded_mode", value)
+
+    var bookmarkedFilterMode: Int
+        get() = libraryFilterMode("library_filter_bookmarked_mode", "filter_bookmarked")
+        set(value) = setLibraryFilterMode("library_filter_bookmarked_mode", value)
 
     // ---- sources ----
     var disabledSources: Set<String>

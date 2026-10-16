@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
@@ -33,6 +32,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jsoup.Jsoup
 import org.json.JSONTokener
 import org.w3c.dom.Element
 import org.w3c.dom.Node
@@ -95,18 +95,27 @@ class EpubReaderActivity : AppCompatActivity() {
     private fun applyTheme() {
         val (bg, fg, link) = themes[readerTheme]
         val flow = if (horizontalReading) {
-            "html{height:100%;direction:ltr;overflow-x:auto;overflow-y:hidden}" +
-                "body{height:100vh!important;direction:ltr;unicode-bidi:plaintext;overflow-x:auto;overflow-y:hidden;" +
-                "column-width:calc(100vw - 24px);column-gap:24px;column-fill:auto}"
+            "html{width:100%!important;height:100%!important;overflow-x:auto!important;overflow-y:hidden!important;" +
+                "direction:ltr!important;scroll-behavior:smooth}" +
+                "body{box-sizing:border-box!important;width:100%!important;height:100vh!important;" +
+                "max-height:100vh!important;margin:0!important;overflow:visible!important;direction:ltr!important;" +
+                "unicode-bidi:plaintext;column-width:calc(100vw - 24px)!important;" +
+                "-webkit-column-width:calc(100vw - 24px)!important;column-gap:0!important;" +
+                "-webkit-column-gap:0!important;column-fill:auto!important;-webkit-column-fill:auto!important}"
         } else {
-            "html{height:auto;overflow:auto}body{height:auto!important;overflow:auto;column-width:auto;column-gap:normal}"
+            "html{width:auto!important;height:auto!important;overflow:auto!important;scroll-snap-type:none!important}" +
+                "body{width:auto!important;height:auto!important;max-height:none!important;max-width:none!important;" +
+                "margin:8px!important;overflow:visible!important;column-width:auto!important;" +
+                "-webkit-column-width:auto!important;column-gap:normal!important;-webkit-column-gap:normal!important}"
         }
         web.setBackgroundColor(Color.parseColor(bg))
         web.evaluateJavascript(
             "(function(){var s=document.getElementById('ir-style');if(!s){s=document.createElement('style');" +
                 "s.id='ir-style';document.head.appendChild(s);}" +
-                "s.innerHTML='html,body{background:$bg !important;color:$fg !important;padding:0 12px;line-height:1.65} " +
-                "a{color:$link !important} img{max-width:100% !important;height:auto} $flow';})()", null
+                "s.innerHTML='html,body{background:$bg !important;color:$fg !important;line-height:1.65} " +
+                    "body{padding:0 12px !important}a{color:$link !important} " +
+                    "img{max-width:100% !important;height:auto} $flow';" +
+                    "document.documentElement.offsetWidth;})()", null
         )
     }
 
@@ -230,7 +239,10 @@ class EpubReaderActivity : AppCompatActivity() {
             app.prefs.sp.edit().putBoolean("epub_horizontal_reading", horizontalReading).apply()
             updateReadingModeButton()
             applyTheme()
-            web.evaluateJavascript("window.scrollTo(0,0)", null)
+            web.evaluateJavascript(
+                "(function(){requestAnimationFrame(function(){window.scrollTo({left:0,top:0});" +
+                    "ImperialReaderProgress.onProgress(0,1);});})()"
+            ) { installProgressReporter(web) }
         }
         btnTts.setOnClickListener { if (speaking) stopSpeaking() else startSpeaking() }
         web.settings.javaScriptEnabled = true
@@ -295,8 +307,17 @@ class EpubReaderActivity : AppCompatActivity() {
         gesture = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent) = true
 
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (!horizontalReading) return false
+                when {
+                    e.x < web.width / 3f -> moveReadingPage(-1)
+                    e.x > web.width * 2f / 3f -> moveReadingPage(1)
+                }
+                return true
+            }
+
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
-                if (e1 == null || !isInsideWeb(e1)) return false
+                if (e1 == null || !horizontalReading) return false
                 val dx = e2.rawX - e1.rawX
                 val dy = e2.rawY - e1.rawY
                 if (abs(dx) < 48 * resources.displayMetrics.density || abs(dx) <= abs(dy)) return false
@@ -304,6 +325,10 @@ class EpubReaderActivity : AppCompatActivity() {
                 return true
             }
         })
+        web.setOnTouchListener { _, event ->
+            gesture.onTouchEvent(event)
+            horizontalReading
+        }
 
         lifecycleScope.launch {
             try {
@@ -373,11 +398,6 @@ class EpubReaderActivity : AppCompatActivity() {
         )
     }
 
-    private fun isInsideWeb(event: MotionEvent): Boolean {
-        val bounds = Rect()
-        return web.getGlobalVisibleRect(bounds) && bounds.contains(event.rawX.toInt(), event.rawY.toInt())
-    }
-
     private fun handleSwipe(direction: Int) {
         if (!horizontalReading) {
             if (epubChapterIndex in epubChapters.indices) {
@@ -390,22 +410,7 @@ class EpubReaderActivity : AppCompatActivity() {
             }
             return
         }
-
-        val edge = if (direction > 0) {
-            "x + window.innerWidth >= Math.max(root.scrollWidth, body.scrollWidth) - 2"
-        } else {
-            "x <= 2"
-        }
-        web.evaluateJavascript(
-            "(function(){var root=document.documentElement,body=document.body;var x=window.scrollX||root.scrollLeft||body.scrollLeft;return $edge;})()"
-        ) { atEdge ->
-            if (atEdge == "true") moveSection(direction)
-        }
-    }
-
-    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (::gesture.isInitialized) gesture.onTouchEvent(event)
-        return super.dispatchTouchEvent(event)
+        moveReadingPage(direction)
     }
 
     private fun show(i: Int) {
@@ -450,10 +455,10 @@ class EpubReaderActivity : AppCompatActivity() {
         val directionLiteral = direction.coerceIn(-1, 1)
         web.evaluateJavascript(
             "(function(){var r=document.documentElement,b=document.body;" +
-                "var x=window.scrollX||r.scrollLeft||b.scrollLeft;" +
-                "var max=Math.max(0,Math.max(r.scrollWidth,b.scrollWidth)-window.innerWidth);" +
-                "if(($directionLiteral<0&&x>2)||($directionLiteral>0&&x<max-2)){" +
-                "window.scrollTo(Math.max(0,Math.min(max,x+$directionLiteral*window.innerWidth)),window.scrollY);return true;}return false;})()"
+                "var dim=Math.max(1,window.innerWidth),x=window.scrollX||r.scrollLeft||b.scrollLeft;" +
+                "var extent=Math.max(r.scrollWidth,b.scrollWidth),maxPage=Math.max(0,Math.ceil(extent/dim)-1);" +
+                "var page=Math.round(x/dim),next=page+$directionLiteral;" +
+                "if(next>=0&&next<=maxPage){window.scrollTo({left:Math.min(next*dim,Math.max(0,extent-dim)),top:0,behavior:'smooth'});return true;}return false;})()"
         ) { moved ->
             if (moved != "true") moveSection(directionLiteral)
         }
@@ -561,26 +566,31 @@ class EpubReaderActivity : AppCompatActivity() {
 
         val title = opf.getElementsByTagNameNS("*", "title").item(0)?.textContent?.trim().orEmpty().ifBlank { "EPUB" }
 
-        val manifest = mutableMapOf<String, Pair<String, String>>() // id -> (href, mediaType)
+        data class ManifestItem(val href: String, val mediaType: String, val properties: String)
+        val manifest = mutableMapOf<String, ManifestItem>()
         val items = opf.getElementsByTagNameNS("*", "item")
         for (i in 0 until items.length) {
             val el = items.item(i) as Element
-            manifest[el.getAttribute("id")] = el.getAttribute("href") to el.getAttribute("media-type")
+            manifest[el.getAttribute("id")] = ManifestItem(
+                href = el.getAttribute("href"),
+                mediaType = el.getAttribute("media-type"),
+                properties = el.getAttribute("properties")
+            )
         }
 
         val spine = mutableListOf<File>()
         val refs = opf.getElementsByTagNameNS("*", "itemref")
         for (i in 0 until refs.length) {
-            val (href, type) = manifest[(refs.item(i) as Element).getAttribute("idref")] ?: continue
-            if (!type.contains("html") && !type.contains("xml")) continue
-            val f = File(opfDir, URLDecoder.decode(href, "UTF-8"))
+            val item = manifest[(refs.item(i) as Element).getAttribute("idref")] ?: continue
+            if (!item.mediaType.contains("html") && !item.mediaType.contains("xml")) continue
+            val f = File(opfDir, URLDecoder.decode(item.href, "UTF-8"))
             if (f.exists()) spine.add(f)
         }
         if (spine.isEmpty()) throw IOException("This EPUB has no readable sections")
 
         // chapter titles from the NCX table of contents, when present
         val titleByPath = mutableMapOf<String, String>()
-        val ncxHref = manifest.values.firstOrNull { it.second == "application/x-dtbncx+xml" }?.first
+        val ncxHref = manifest.values.firstOrNull { it.mediaType == "application/x-dtbncx+xml" }?.href
         if (ncxHref != null) {
             val ncxFile = File(opfDir, URLDecoder.decode(ncxHref, "UTF-8"))
             if (ncxFile.exists()) {
@@ -597,7 +607,40 @@ class EpubReaderActivity : AppCompatActivity() {
                 }
             }
         }
-        val titles = spine.mapIndexed { i, f -> titleByPath[f.canonicalPath] ?: "Section ${i + 1}" }
+        val navHref = manifest.values.firstOrNull { "nav" in it.properties.split(Regex("\\s+")) }?.href
+        if (navHref != null) {
+            val navFile = File(opfDir, URLDecoder.decode(navHref, "UTF-8"))
+            if (navFile.exists()) {
+                val nav = parse(navFile)
+                val navNodes = nav.getElementsByTagNameNS("*", "nav")
+                val toc = (0 until navNodes.length)
+                    .mapNotNull { navNodes.item(it) as? Element }
+                    .firstOrNull {
+                        val type = it.getAttributeNS("http://www.idpf.org/2007/ops", "type")
+                            .ifBlank { it.getAttribute("epub:type") }
+                        type.split(Regex("\\s+")).contains("toc")
+                    }
+                    ?: nav.documentElement
+                val links = toc.getElementsByTagNameNS("*", "a")
+                for (i in 0 until links.length) {
+                    val link = links.item(i) as? Element ?: continue
+                    val label = link.textContent.trim()
+                    val href = link.getAttribute("href").substringBefore('#')
+                    if (label.isBlank() || href.isBlank()) continue
+                    val file = File(navFile.parentFile, URLDecoder.decode(href, "UTF-8"))
+                    titleByPath.putIfAbsent(file.canonicalPath, label)
+                }
+            }
+        }
+        val titles = spine.mapIndexed { i, file ->
+            titleByPath[file.canonicalPath]
+                ?: runCatching {
+                    val section = Jsoup.parse(file, "UTF-8")
+                    section.selectFirst("title")?.text()?.trim()?.ifBlank { null }
+                        ?: section.selectFirst("h1, h2, h3, h4")?.text()?.trim()?.ifBlank { null }
+                }.getOrNull()
+                ?: "Section ${i + 1}"
+        }
         return Book(title, spine, titles)
     }
 

@@ -85,7 +85,9 @@ class HentaiDbSource : HttpSource() {
 open class NhentaiXxxSource(
     override val id: String = "nhentai_xxx",
     override val name: String = "nhentai.xxx",
-    override val baseUrl: String = "https://nhentai.xxx"
+    override val baseUrl: String = "https://nhentai.xxx",
+    private val galleryPath: String = "g",
+    private val pagePath: String = galleryPath
 ) : HttpSource() {
     override val lang = "en"
     override val nsfw = true
@@ -101,7 +103,7 @@ open class NhentaiXxxSource(
     private suspend fun list(url: String): MangasPage {
         val doc = Jsoup.parse(getString(url), url)
         val results = doc.select("a[href]").asSequence()
-            .filter { it.attr("href").startsWith("/g/") }
+            .filter { galleryId(it.absUrl("href")) != null }
             .filter { it.selectFirst("img") != null }
             .mapNotNull { a ->
                 val href = a.absUrl("href")
@@ -112,7 +114,7 @@ open class NhentaiXxxSource(
                 }.trim()
                 if (title.isBlank()) return@mapNotNull null
                 SManga(
-                    url = "$baseUrl/g/$id/",
+                    url = "$baseUrl/$galleryPath/$id/",
                     title = title,
                     thumbnailUrl = imageUrl(img)
                 )
@@ -122,9 +124,12 @@ open class NhentaiXxxSource(
 
     override suspend fun getMangaDetails(manga: SManga): SManga {
         val doc = Jsoup.parse(getString(manga.url), manga.url)
-        manga.title = doc.selectFirst("#info h1, .title h1, h1")?.text()?.trim()?.ifBlank { null } ?: manga.title
+        manga.title = doc.selectFirst("#info h1, .title h1, h1")?.text()?.trim()?.ifBlank { null }
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")
+                ?.substringBefore(" - IMHentai")?.trim()?.ifBlank { null }
+            ?: manga.title
         manga.thumbnailUrl = doc.selectFirst("meta[property=og:image]")?.attr("content")?.ifBlank { null }
-            ?: doc.selectFirst("#cover img, .cover img")?.let(::imageUrl)
+            ?: doc.selectFirst("#cover img, .cover img, img[alt$=cover]")?.let(::imageUrl)
             ?: manga.thumbnailUrl
         manga.description = doc.selectFirst("meta[property=og:description], meta[name=description]")
             ?.attr("content")?.trim()?.ifBlank { null } ?: manga.description
@@ -145,14 +150,13 @@ open class NhentaiXxxSource(
         val count = galleryPageCount(doc, id)
         if (count <= 0) throw IOException("nhentai.xxx did not return a page count for this gallery")
 
-        val embedded = doc.select("img[src], img[data-src], img[data-original]")
+        val embedded = if (pagePath != galleryPath) emptyList() else doc.select("img[src], img[data-src], img[data-original]")
             .mapNotNull(::imageUrl)
             .filter(::isGalleryImage)
             .distinct()
         if (embedded.size >= count) return embedded.take(count)
 
-        // The site exposes each full-size page at /g/<id>/<page>/. Fetch those pages concurrently,
-        // extracting the image URL rather than handing the reader an HTML page URL.
+        // Fetch each reader page concurrently and return the full image URL, not its HTML wrapper.
         val gate = Semaphore(6)
         return coroutineScope {
             (1..count).map { page ->
@@ -164,7 +168,7 @@ open class NhentaiXxxSource(
     }
 
     private suspend fun pageImage(id: String, page: Int): String {
-        val url = "$baseUrl/g/$id/$page/"
+        val url = "$baseUrl/$pagePath/$id/$page/"
         val doc = Jsoup.parse(getString(url), url)
         return doc.select("img[src], img[data-src], img[data-original]")
             .mapNotNull(::imageUrl)
@@ -173,31 +177,51 @@ open class NhentaiXxxSource(
     }
 
     private fun isGalleryImage(url: String): Boolean {
-        val host = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
-        return (host.endsWith("nhentaimg.com") || host.endsWith("imhentai.xxx")) &&
-            !url.substringBefore('?').endsWith("/thumb.jpg", ignoreCase = true)
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host.orEmpty().lowercase()
+        val path = uri.path.orEmpty()
+        val isImageHost = host == "nhentaimg.com" || host.endsWith(".nhentaimg.com") ||
+            (host.endsWith(".imhentai.xxx") && host != "www.imhentai.xxx")
+        return isImageHost &&
+            Regex("""\.(jpe?g|png|webp|gif)$""", RegexOption.IGNORE_CASE).containsMatchIn(path) &&
+            !url.substringBefore('?').endsWith("/thumb.jpg", ignoreCase = true) &&
+            !Regex("""/\d+t\.(jpe?g|png|webp)$""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(url.substringBefore('?'))
     }
 
     private fun galleryPageCount(doc: Document, id: String): Int {
         val linkedPages = doc.select("a[href]").asSequence()
-            .filter { it.attr("href").startsWith("/g/$id/") }
-            .mapNotNull { Regex("""/g/\Q$id\E/(\d+)/?""").find(it.attr("href"))?.groupValues?.get(1)?.toIntOrNull() }
+            .mapNotNull { galleryPageNumber(it.attr("href"), id) }
             .maxOrNull() ?: 0
+        val fromLabel = Regex("""(?i)\bpages?\s*:\s*(\d{1,4})\b""").find(doc.text())
+            ?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val fromText = Regex("""(?i)\b(\d{1,4})\s+pages?\b""").find(doc.text())
             ?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val fromMetadata = doc.selectFirst("#load_pages, [name=load_pages], [data-page-count]")
             ?.let { it.attr("value").ifBlank { it.attr("data-page-count") }.toIntOrNull() } ?: 0
-        return maxOf(linkedPages, fromText, fromMetadata)
+        return maxOf(linkedPages, fromLabel, fromText, fromMetadata)
     }
 
-    private fun galleryId(url: String): String? =
-        Regex("""/g/(\d+)(?:/|$)""").find(url)?.groupValues?.get(1)
+    private fun galleryId(url: String): String? {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        val expectedHost = runCatching { URI(baseUrl).host.orEmpty().removePrefix("www.") }
+            .getOrDefault("")
+        if (uri.host.orEmpty().removePrefix("www.") != expectedHost) return null
+        return Regex("""/\Q$galleryPath\E/(\d+)(?:/|$)""", RegexOption.IGNORE_CASE)
+            .find(uri.path.orEmpty())?.groupValues?.get(1)
+    }
+
+    private fun galleryPageNumber(path: String, id: String): Int? =
+        Regex("""/\Q$galleryPath\E/\Q$id\E/(\d+)/?""", RegexOption.IGNORE_CASE)
+            .find(path)?.groupValues?.get(1)?.toIntOrNull()
 }
 
 class ImhentaiXxxSource : NhentaiXxxSource(
     id = "imhentai_xxx",
     name = "imhentai.xxx",
-    baseUrl = "https://imhentai.xxx"
+    baseUrl = "https://imhentai.xxx",
+    galleryPath = "gallery",
+    pagePath = "view"
 )
 
 /** 9hentai.so's live JSON API provides search results, gallery metadata, and page counts. */

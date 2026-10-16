@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import com.imperialreader.data.source.GenericSource
 import com.imperialreader.data.source.SManga
+import com.imperialreader.data.source.TapasSupport
 import com.imperialreader.data.source.hostId
 import com.imperialreader.data.source.lazyImage
 import org.json.JSONArray
@@ -548,6 +549,8 @@ class TapasNovelSource : BookSource {
             val url = seriesUrl(rawUrl) ?: return@mapNotNull null
             val image = card.selectFirst("img")
             val title = card.attr("title").trim().ifBlank {
+                card.selectFirst("[title]")?.attr("title")?.trim().orEmpty()
+            }.ifBlank {
                 image?.attr("alt")?.trim().orEmpty().ifBlank { card.text().trim() }
             }
             if (title.isBlank()) return@mapNotNull null
@@ -557,10 +560,15 @@ class TapasNovelSource : BookSource {
     override suspend fun details(item: BookItem): BookItem {
         val url = seriesUrl(item.id) ?: throw IOException("Invalid Tapas series address")
         val doc = Jsoup.parse(fetchHtml("$url/info"), "$url/info")
-        val title = doc.selectFirst("h1")?.text()?.trim()?.ifBlank { null } ?: item.title
+        val title = doc.selectFirst("h1")?.text()?.trim()?.ifBlank { null }
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")
+                ?.removePrefix("Read ")?.substringBefore(" | Tapas")?.trim()?.ifBlank { null }
+            ?: item.title
         val author = doc.select("[class*=author] a, a[href*=/creator/]")
             .map { it.text().trim() }.firstOrNull { it.isNotBlank() }
-        val genres = doc.select("a[href*=/genre/], .genre a, .genres a, .tag-list a")
+        val genres = doc.select(
+            "a[href*=/genre/], .genre a, .genres a, .tag-list a, .detail-row__body--genre a"
+        )
             .map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
         return item.copy(
             title = title,
@@ -575,22 +583,29 @@ class TapasNovelSource : BookSource {
     override suspend fun chapters(item: BookItem): List<NovelChapter> {
         val url = seriesUrl(item.id) ?: throw IOException("Invalid Tapas series address")
         val doc = Jsoup.parse(fetchHtml("$url/info"), "$url/info")
-        val chapters = doc.select(".episode-list a[href*=/episode/]").mapNotNull { anchor ->
-            val episode = episodeUrl(anchor.absUrl("href")) ?: return@mapNotNull null
-            val title = anchor.text().trim().ifBlank { anchor.attr("title").trim() }
-            if (title.isBlank()) null else NovelChapter(title, episode)
-        }.distinctBy { it.url }.reversed()
-        if (chapters.isEmpty()) throw IOException("Tapas returned no novel episodes")
-        return chapters
+        return TapasSupport.chapters(base, doc).map { NovelChapter(it.title, it.url) }
     }
 
     override suspend fun chapterHtml(chapter: NovelChapter): String {
-        val url = episodeUrl(chapter.url) ?: throw IOException("Invalid Tapas episode address")
+        val url = TapasSupport.episodeUrl(chapter.url) ?: throw IOException("Invalid Tapas episode address")
         val doc = Jsoup.parse(fetchHtml(url), url)
         val content = doc.selectFirst("article.viewer__body")
             ?: throw IOException("Tapas novel text was not found")
         content.select("script, style, noscript, iframe, nav, header, footer, aside, form").remove()
-        if (content.select("p").none { it.text().isNotBlank() }) {
+        val hasText = content.select("p, div, span").any { it.ownText().isNotBlank() }
+        val hasImages = content.select("img").toList().any { image ->
+            val src = image.attr("src")
+            when {
+                src.startsWith("data:image/", ignoreCase = true) -> {
+                    if (TapasSupport.hasReadableImage(src)) true else {
+                        image.remove()
+                        false
+                    }
+                }
+                else -> lazyImage(image) != null
+            }
+        }
+        if (!hasText && !hasImages) {
             throw IOException("Tapas returned an empty novel episode")
         }
         return content.html()
@@ -604,12 +619,124 @@ class TapasNovelSource : BookSource {
         return "$base$path"
     }
 
-    private fun episodeUrl(raw: String): String? {
-        val uri = Uri.parse(if (raw.startsWith("http", true)) raw else "$base/${raw.removePrefix("/")}")
-        if (uri.host.orEmpty().lowercase() !in setOf("tapas.io", "www.tapas.io", "m.tapas.io")) return null
-        val path = uri.path.orEmpty().trimEnd('/')
-        if (!path.matches(Regex("""^/episode/\d+$""", RegexOption.IGNORE_CASE))) return null
-        return "$base$path"
+}
+
+private class LunarXSource : BookSource {
+    override val id = "novel_" + hostId("https://lunarx.to", "LunarX")
+    override val name = "LunarX"
+    override val description = "Web novel • LunarX catalog"
+    override val isWebNovel = true
+    override val inGlobalSearch = false
+    override val webUrl = "https://lunarx.to"
+    private val api = "https://api.lunarx.to"
+    private val site = "https://lunarx.to"
+
+    override suspend fun popular(page: Int): List<BookItem> {
+        if (page < 1) return emptyList()
+        val json = JSONObject(fetchText("$api/api/novels/db/search?sort=popular&page=$page&limit=24"))
+        return parseItems(json.optJSONArray("novels"))
+    }
+
+    override suspend fun search(query: String, page: Int): List<BookItem> {
+        if (query.isBlank() || page < 1) return emptyList()
+        val json = JSONObject(
+            fetchText("$api/api/novels/db/search?query=${enc(query)}&page=$page&limit=24")
+        )
+        return parseItems(json.optJSONArray("novels"))
+    }
+
+    private fun parseItems(entries: JSONArray?): List<BookItem> {
+        if (entries == null) return emptyList()
+        return (0 until entries.length()).mapNotNull { index ->
+            val entry = entries.optJSONObject(index) ?: return@mapNotNull null
+            val slug = entry.optString("slug").takeIf { it.matches(Regex("""[A-Za-z0-9_-]+""")) }
+                ?: return@mapNotNull null
+            val title = entry.optString("title").trim().ifBlank { return@mapNotNull null }
+            val genres = parseGenres(entry.opt("genres"))
+            BookItem(
+                sourceId = id,
+                sourceName = name,
+                id = "$site/novel/$slug",
+                title = title,
+                author = entry.optString("author").takeIf { it.isNotBlank() && it != "null" },
+                coverUrl = entry.optString("cover_url").takeIf { it.startsWith("https://") },
+                epubUrl = null,
+                description = entry.optString("description").takeIf { it.isNotBlank() && it != "null" },
+                artist = entry.optString("artist").takeIf { it.isNotBlank() && it != "null" },
+                genre = genres.takeIf { it.isNotEmpty() }?.joinToString(", ")
+            )
+        }.distinctBy { it.id }
+    }
+
+    private fun parseGenres(raw: Any?): List<String> {
+        val values = when (raw) {
+            is JSONArray -> (0 until raw.length()).map { raw.optString(it) }
+            is String -> runCatching {
+                val array = JSONArray(raw)
+                (0 until array.length()).map { array.optString(it) }
+            }.getOrElse { raw.split(',') }
+            else -> emptyList()
+        }
+        return values.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    }
+
+    private fun novelSlug(itemUrl: String): String? {
+        val uri = Uri.parse(itemUrl)
+        if (uri.host?.removePrefix("www.")?.equals("lunarx.to", true) != true) return null
+        return Regex("""^/novel/([A-Za-z0-9_-]+)/?$""")
+            .matchEntire(uri.path.orEmpty())?.groupValues?.get(1)
+    }
+
+    override suspend fun details(item: BookItem): BookItem {
+        val slug = novelSlug(item.id) ?: throw IOException("Invalid LunarX novel address")
+        val results = search(item.title, 1)
+        return results.firstOrNull { novelSlug(it.id) == slug } ?: item
+    }
+
+    override suspend fun chapters(item: BookItem): List<NovelChapter> {
+        val slug = novelSlug(item.id) ?: throw IOException("Invalid LunarX novel address")
+        val result = JSONObject(fetchText("$api/api/novels/chapters/${Uri.encode(slug)}"))
+        val entries = result.optJSONArray("chapters")
+            ?: throw IOException("LunarX did not return a chapter list")
+        if (entries.length() == 0) throw IOException("LunarX has no published chapters for this novel")
+        val expected = result.optInt("count", entries.length())
+        if (expected > entries.length()) {
+            throw IOException("LunarX returned an incomplete chapter list")
+        }
+        val chapters = (0 until entries.length()).mapNotNull { index ->
+            val chapter = entries.optJSONObject(index) ?: return@mapNotNull null
+            if (chapter.optBoolean("is_coming_soon")) return@mapNotNull null
+            if (!chapter.optString("language").equals("en", ignoreCase = true)) return@mapNotNull null
+            val number = chapter.optInt("chapter", -1).takeIf { it >= 0 }
+                ?: return@mapNotNull null
+            val title = chapter.optString("chapter_title").trim()
+                .ifBlank { "Chapter $number" }
+            NovelChapter(title, "$site/novel/$slug/$number")
+        }.distinctBy { it.url }.sortedBy { chapter ->
+            chapter.url.substringAfterLast('/').toIntOrNull() ?: Int.MAX_VALUE
+        }
+        if (chapters.isEmpty()) throw IOException("LunarX has no readable English chapters for this novel")
+        return chapters
+    }
+
+    override suspend fun chapterHtml(chapter: NovelChapter): String {
+        val url = chapter.url
+        val chapterSlug = Regex("""^https://lunarx\.to/novel/([A-Za-z0-9_-]+)/(\d+)/?$""")
+            .matchEntire(url)?.groupValues?.get(1)
+            ?: throw IOException("Invalid LunarX chapter address")
+        val doc = Jsoup.parse(fetchHtml(url), url)
+        val content = doc.select(
+            "article, .chapter-content, .chapter__content, .novel-content, [class*=chapter-content]"
+        ).maxByOrNull { it.select("p").sumOf { paragraph -> paragraph.text().length } }
+            ?: throw IOException("LunarX chapter text was not found")
+        content.select("script, style, noscript, iframe, nav, header, footer, aside, form").remove()
+        if (content.select("p").isEmpty() || content.text().isBlank()) {
+            throw IOException("LunarX returned an empty chapter")
+        }
+        if (!chapterSlug.matches(Regex("""[A-Za-z0-9_-]+"""))) {
+            throw IOException("Invalid LunarX chapter address")
+        }
+        return content.html()
     }
 }
 
@@ -683,16 +810,19 @@ object BookSources {
     val all: List<BookSource> =
         listOf(LocalBookSource(), GutenbergSource(), InternetArchiveSource(), RoyalRoadSource(), TapasNovelSource()) +
             novelSites.map { (name, url) ->
-                when (hostId(url, name)) {
-                    "novelphoenix_com" -> NovelPhoenixSource()
-                    "novelfire_net" -> NovelFireSource()
-                    "novelping_com" -> NovelPingSource()
-                    "novelarrow_com" -> NovelPingSource(
-                        catalogId = "novel_novelarrow_com",
-                        displayName = "NovelArrow",
-                        siteUrl = url
-                    )
-                    else -> WebNovelSource("novel_" + hostId(url, name), name, url)
+                when {
+                    name == "LunarX" -> LunarXSource()
+                    else -> when (hostId(url, name)) {
+                        "novelphoenix_com" -> NovelPhoenixSource()
+                        "novelfire_net" -> NovelFireSource()
+                        "novelping_com" -> NovelPingSource()
+                        "novelarrow_com" -> NovelPingSource(
+                            catalogId = "novel_novelarrow_com",
+                            displayName = "NovelArrow",
+                            siteUrl = url
+                        )
+                        else -> WebNovelSource("novel_" + hostId(url, name), name, url)
+                    }
                 }
             }
     fun get(id: String): BookSource? = all.firstOrNull { it.id == id }

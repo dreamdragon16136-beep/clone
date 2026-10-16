@@ -70,7 +70,9 @@ class NightScanSource : HttpSource() {
         } else {
             fetchChapters(id, slug, languageId = null).distinctBy { it.url }
         }
-        if (chapters.isEmpty()) throw IOException("NightScan returned no readable chapters")
+        if (chapters.isEmpty()) {
+            throw IOException("NightScan has no published chapters with page images for this series")
+        }
         return chapters.sortedByDescending { it.chapterNumber }
     }
 
@@ -79,7 +81,7 @@ class NightScanSource : HttpSource() {
         slug: String,
         languageId: Int?
     ): List<SChapter> {
-        val chapters = mutableListOf<SChapter>()
+        val candidates = mutableListOf<Pair<String, SChapter>>()
         var page = 1
         var hasNext: Boolean
         do {
@@ -99,26 +101,77 @@ class NightScanSource : HttpSource() {
                 val number = chapter.optString("chapterNumber").takeIf { it.isNotBlank() && it != "null" }
                 val chapterId = chapter.optString("id").takeIf { it.isNotBlank() && it != "null" }
                     ?: continue
+                val translationId = translation.optString("id")
+                    .takeIf { it.matches(Regex("""\d+""")) }
+                    ?: continue
                 val title = translation.optString("displayTitle")
                     .takeIf { it.isNotBlank() && it != "null" }
                     ?: "Chapter ${number ?: chapterId}"
-                chapters += SChapter(
-                    url = "$baseUrl/series/$slug/chapter/${number ?: chapterId}",
-                    name = title,
-                    dateUpload = translation.optString("publishedAt").toEpochMillis(),
-                    chapterNumber = number?.toFloatOrNull() ?: -1f
+                candidates += translationId to SChapter(
+                        url = "$baseUrl/series/$slug/chapter/${number ?: chapterId}",
+                        name = title,
+                        dateUpload = translation.optString("publishedAt").toEpochMillis(),
+                        chapterNumber = number?.toFloatOrNull() ?: -1f
                 )
             }
             hasNext = json.optBoolean("hasNextPage")
             page++
         } while (hasNext)
-        return chapters
+        if (candidates.isEmpty()) return emptyList()
+        val translationsWithPages = fetchTranslationsWithPages(candidates.map { it.first }.distinct())
+        return candidates.filter { it.first in translationsWithPages }
+            .map { it.second }
+            .distinctBy { it.url }
+    }
+
+    private suspend fun fetchTranslationsWithPages(translationIds: List<String>): Set<String> {
+        val translationsWithPages = mutableSetOf<String>()
+        for (batch in translationIds.distinct().chunked(PAGE_SIZE)) {
+            var page = 1
+            var hasNext: Boolean
+            do {
+                val json = JSONObject(
+                    getString(
+                        "$baseUrl/api/chapter-pages?where[chapterTranslation][in]=${enc(batch.joinToString(","))}" +
+                            "&page=$page&limit=1000&depth=0"
+                    )
+                )
+                val docs = json.optJSONArray("docs")
+                    ?: throw IOException("NightScan returned no chapter page records")
+                for (index in 0 until docs.length()) {
+                    val record = docs.optJSONObject(index) ?: continue
+                    val translation = record.opt("chapterTranslation")
+                    val id = when (translation) {
+                        is JSONObject -> translation.optString("id")
+                        else -> translation?.toString().orEmpty()
+                    }
+                    if (id in batch) translationsWithPages += id
+                }
+                hasNext = json.optBoolean("hasNextPage")
+                page++
+                if (page > MAX_CHAPTER_PAGE_LIST_PAGES) {
+                    throw IOException("NightScan chapter page list exceeds the safe limit")
+                }
+            } while (hasNext)
+        }
+        return translationsWithPages
     }
 
     override suspend fun getPages(chapter: SChapter): List<String> {
         val doc = Jsoup.parse(getString(chapter.url), chapter.url)
-        val pages = doc.select("img[alt^=Page][src*=r2.dev/media]")
-            .map { it.absUrl("src") }
+        val pages = doc.select("img[src], img[data-src], img[data-original]")
+            .mapNotNull { image ->
+                val url = image.absUrl("data-src").ifBlank {
+                    image.absUrl("data-original").ifBlank { image.absUrl("src") }
+                }
+                val host = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
+                url.takeIf {
+                    host.endsWith("r2.dev") &&
+                        (it.contains("/media/") || it.contains("r2.dev/media")) &&
+                        !it.contains("logo", true) &&
+                        !it.contains("placeholder", true)
+                }
+            }
             .filter { it.isNotBlank() }
             .distinct()
         if (pages.isEmpty()) throw IOException("NightScan returned no readable pages for this chapter")
@@ -178,5 +231,6 @@ class NightScanSource : HttpSource() {
     private companion object {
         const val PAGE_SIZE = 100
         const val ENGLISH_LANGUAGE_ID = 1
+        const val MAX_CHAPTER_PAGE_LIST_PAGES = 100
     }
 }

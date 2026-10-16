@@ -532,11 +532,18 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
         val prefs = requireContext().app.prefs
         var list = items.filter { q.isBlank() || it.manga.title.contains(q, ignoreCase = true) }
         if (category >= 0) list = list.filter { it.manga.categoryId == category }
-        if (prefs.filterUnread) list = list.filter { it.unread > 0 }
-        if (prefs.filterBookmarked) list = list.filter { it.bookmarked > 0 }
-        if (prefs.filterDownloaded || prefs.downloadedOnly) {
-            list = list.filter { it.downloadedCount > 0 || it.manga.source == LOCAL_SOURCE_ID }
+        fun filter(mode: Int, matches: (LibraryItem) -> Boolean) {
+            when (mode) {
+                com.imperialreader.data.AppPrefs.FILTER_INCLUDE -> list = list.filter(matches)
+                com.imperialreader.data.AppPrefs.FILTER_EXCLUDE -> list = list.filterNot(matches)
+            }
         }
+        filter(prefs.unreadFilterMode) { it.unread > 0 }
+        filter(prefs.bookmarkedFilterMode) { it.bookmarked > 0 }
+        val isDownloaded: (LibraryItem) -> Boolean =
+            { it.downloadedCount > 0 || it.manga.source == LOCAL_SOURCE_ID }
+        if (prefs.downloadedOnly) list = list.filter(isDownloaded)
+        filter(prefs.downloadedFilterMode, isDownloaded)
         return when (prefs.sortMode) {
             1 -> list.sortedByDescending { it.lastRead ?: 0L }
             2 -> list.sortedByDescending { it.unread }
@@ -572,19 +579,48 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
 
     private fun showFilterDialog() {
         val prefs = requireContext().app.prefs
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("Filter")
-            .setMultiChoiceItems(
-                arrayOf("Unread", "Downloaded", "Bookmarked"),
-                booleanArrayOf(prefs.filterUnread, prefs.filterDownloaded, prefs.filterBookmarked)
-            ) { _, which, checked ->
-                when (which) {
-                    0 -> prefs.filterUnread = checked
-                    1 -> prefs.filterDownloaded = checked
-                    else -> prefs.filterBookmarked = checked
-                }
+        val context = requireContext()
+        val rows = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(context.dp(24), context.dp(8), context.dp(24), context.dp(8))
+        }
+        val states = listOf("— Off", "✓ Include", "× Exclude")
+        val getMode = listOf(
+            { prefs.unreadFilterMode },
+            { prefs.downloadedFilterMode },
+            { prefs.bookmarkedFilterMode }
+        )
+        val setMode: List<(Int) -> Unit> = listOf(
+            { prefs.unreadFilterMode = it },
+            { prefs.downloadedFilterMode = it },
+            { prefs.bookmarkedFilterMode = it }
+        )
+        listOf("Unread", "Downloaded", "Bookmarked").forEachIndexed { index, title ->
+            val status = Button(context)
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, context.dp(4), 0, context.dp(4))
+            }
+            row.addView(TextView(context).apply {
+                text = title
+                textSize = 16f
+            }, LinearLayout.LayoutParams(0, context.dp(48), 1f))
+            row.addView(status, LinearLayout.LayoutParams(context.dp(120), context.dp(48)))
+            fun updateStatus() {
+                status.text = states[getMode[index]().coerceIn(states.indices)]
+            }
+            updateStatus()
+            status.setOnClickListener {
+                setMode[index]((getMode[index]() + 1) % states.size)
+                updateStatus()
                 tick.value = tick.value + 1
             }
+            rows.addView(row)
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("Filter")
+            .setView(rows)
             .setPositiveButton("Done", null)
             .show()
     }
