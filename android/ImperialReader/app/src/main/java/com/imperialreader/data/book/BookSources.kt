@@ -724,17 +724,25 @@ private class LunarXSource : BookSource {
         val chapterSlug = Regex("""^https://lunarx\.to/novel/([A-Za-z0-9_-]+)/(\d+)/?$""")
             .matchEntire(url)?.groupValues?.get(1)
             ?: throw IOException("Invalid LunarX chapter address")
-        val doc = Jsoup.parse(fetchHtml(url), url)
-        val content = doc.select(
-            "article, .chapter-content, .chapter__content, .novel-content, [class*=chapter-content]"
-        ).maxByOrNull { it.select("p").sumOf { paragraph -> paragraph.text().length } }
-            ?: throw IOException("LunarX chapter text was not found")
-        content.select("script, style, noscript, iframe, nav, header, footer, aside, form").remove()
-        if (content.select("p").isEmpty() || content.text().isBlank()) {
-            throw IOException("LunarX returned an empty chapter")
-        }
         if (!chapterSlug.matches(Regex("""[A-Za-z0-9_-]+"""))) {
             throw IOException("Invalid LunarX chapter address")
+        }
+        val doc = Jsoup.parse(fetchHtml(url), url)
+        val content = doc.select(
+            "article, main, section, .chapter-content, .chapter__content, .novel-content, " +
+                ".chapter-body, .reader-content, .reading-content, .text-content, " +
+                "[class*=content], [id*=content]"
+        ).map { candidate ->
+            candidate.clone().apply {
+                select("script, style, noscript, iframe, nav, header, footer, aside, form, " +
+                    "[class*=advert], [id*=advert], .ads, .ad").remove()
+            }
+        }.maxByOrNull { candidate ->
+            candidate.select("p").sumOf { it.text().length }.coerceAtLeast(candidate.text().length)
+        } ?: throw IOException("LunarX chapter text was not found")
+        val readableText = content.text().trim()
+        if (readableText.length < 80) {
+            throw IOException("LunarX returned an empty chapter")
         }
         return content.html()
     }

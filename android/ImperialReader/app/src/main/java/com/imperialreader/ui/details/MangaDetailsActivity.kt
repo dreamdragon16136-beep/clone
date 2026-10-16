@@ -1,6 +1,8 @@
 package com.imperialreader.ui.details
 
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -501,6 +503,12 @@ class MangaDetailsActivity : AppCompatActivity() {
             val source = app.sources.get(manga.source)
             h.cover.load(manga.coverUrl) { source?.imageHeaders()?.forEach { (k, v) -> addHeader(k, v) } }
             h.title.text = manga.title
+            h.title.setOnLongClickListener {
+                h.title.context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("Title", manga.title))
+                h.title.context.toast("Title copied")
+                true
+            }
             val people = listOfNotNull(manga.author, manga.artist?.takeIf { it != manga.author }).joinToString(" • ")
             h.author.text = people.ifBlank { "Unknown author" }
             val sourceLabel = when {

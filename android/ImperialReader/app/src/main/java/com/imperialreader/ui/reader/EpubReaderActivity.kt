@@ -97,11 +97,13 @@ class EpubReaderActivity : AppCompatActivity() {
         val flow = if (horizontalReading) {
             "html{width:100%!important;height:100%!important;overflow-x:auto!important;overflow-y:hidden!important;" +
                 "direction:ltr!important;scroll-behavior:smooth}" +
-                "body{box-sizing:border-box!important;width:100%!important;height:100vh!important;" +
-                "max-height:100vh!important;margin:0!important;overflow:visible!important;direction:ltr!important;" +
-                "unicode-bidi:plaintext;column-width:calc(100vw - 24px)!important;" +
-                "-webkit-column-width:calc(100vw - 24px)!important;column-gap:0!important;" +
-                "-webkit-column-gap:0!important;column-fill:auto!important;-webkit-column-fill:auto!important}"
+                "body{box-sizing:border-box!important;width:100vw!important;height:100vh!important;" +
+                "max-height:100vh!important;margin:0!important;padding:0!important;overflow:visible!important;" +
+                "direction:ltr!important;unicode-bidi:plaintext;column-width:100vw!important;" +
+                "-webkit-column-width:100vw!important;column-gap:0!important;-webkit-column-gap:0!important;" +
+                "column-fill:auto!important;-webkit-column-fill:auto!important}" +
+                "body *{overflow-wrap:anywhere!important}img,video,canvas,svg{max-width:100vw!important;" +
+                "max-height:100vh!important;object-fit:contain}"
         } else {
             "html{width:auto!important;height:auto!important;overflow:auto!important;scroll-snap-type:none!important}" +
                 "body{width:auto!important;height:auto!important;max-height:none!important;max-width:none!important;" +

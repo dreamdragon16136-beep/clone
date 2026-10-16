@@ -53,6 +53,7 @@ class SourceBrowseActivity : AppCompatActivity() {
     private lateinit var errorText: TextView
 
     private var mode = 0 // 0 popular, 1 latest, 2 search
+    private var genreOnly = false
     private var query = ""
     private var page = 1
     private var hasNext = true
@@ -128,8 +129,13 @@ class SourceBrowseActivity : AppCompatActivity() {
             }
         })
         toolbar.setOnMenuItemClickListener {
-            if (it.itemId == R.id.action_webview) {
-                startActivity(WebViewActivity.intent(this, source.baseUrl))
+            when (it.itemId) {
+                R.id.action_webview -> startActivity(WebViewActivity.intent(this, source.baseUrl))
+                R.id.action_genre_search -> {
+                    genreOnly = !genreOnly
+                    it.isChecked = genreOnly
+                    reset()
+                }
             }
             true
         }
@@ -185,13 +191,14 @@ class SourceBrowseActivity : AppCompatActivity() {
         loadJob = lifecycleScope.launch {
             try {
                 favoriteUrls = app.db.mangaDao().favoriteUrls(source.id).toSet()
-                val titleResults = when (mode) {
-                    0 -> source.getPopular(page)
-                    1 -> source.getLatest(page)
-                    else -> source.search(query, page)
+                val titleResults = when {
+                    mode == 0 -> source.getPopular(page)
+                    mode == 1 -> source.getLatest(page)
+                    mode == 2 && !genreOnly -> source.search(query, page)
+                    else -> MangasPage(emptyList(), false)
                 }
                 var genreError: String? = null
-                val genreResults = if (mode == 2 && query.length >= 2) {
+                val genreResults = if (mode == 2 && query.isNotBlank() && (genreOnly || query.length >= 2)) {
                     try {
                         withTimeout(12_000L) { source.searchByGenre(query, page) }
                     } catch (e: TimeoutCancellationException) {

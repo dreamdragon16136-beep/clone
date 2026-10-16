@@ -1,5 +1,7 @@
 package com.imperialreader.ui.common
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -11,6 +13,7 @@ import androidx.recyclerview.widget.RecyclerView
 import coil.load
 import com.imperialreader.R
 import com.imperialreader.util.dp
+import com.imperialreader.util.toast
 
 data class CardItem(
     val key: String,
@@ -64,6 +67,12 @@ class MangaCardAdapter(
         holder.itemView.setOnLongClickListener {
             onLongClick?.invoke(item)
             onLongClick != null
+        }
+        holder.title.setOnLongClickListener {
+            val clipboard = holder.title.context.getSystemService(ClipboardManager::class.java)
+            clipboard.setPrimaryClip(ClipData.newPlainText("Title", item.title))
+            holder.title.context.toast("Title copied")
+            true
         }
     }
 

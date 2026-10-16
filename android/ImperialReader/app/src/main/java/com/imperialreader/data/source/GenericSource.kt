@@ -273,15 +273,23 @@ class GenericSource(
             ".genres a, .genre a, .tags a, .tag a, .manga-genres a, .series-genres a, " +
                 ".genres-content a, .mgen a, .seriestugenre a, [itemprop=genre]"
         ) + d.select("[itemprop=genre]")
-        val labeledGenres = detailAreas.select("li, p, div, span, td, tr").filter { element ->
-            val text = element.ownText().ifBlank { element.text() }.trim()
-            text.startsWith("Genre", true) || text.startsWith("Tag", true)
-        }.flatMap { it.select("a, [itemprop=genre]") }
-        manga.genre = (genreLinks + labeledGenres)
+        val genreNames = (genreLinks + detailAreas.select(
+            ".genres, .genre, .tags, .tag, [class*=genre], [class*=tag], [itemprop=genre]"
+        ).flatMap { it.select("a, [itemprop=genre]") })
             .filter { link -> link.parents().none { it.tagName() in setOf("nav", "header", "footer") } }
-            .map { it.text().trim().trim(',') }
-            .filter { it.isNotBlank() && it.length < 50 }.distinct().take(20)
-            .joinToString(", ").ifBlank { null }
+            .map { link -> link.attr("content").ifBlank { link.text() }.trim().trim(',', ':') }
+            .filter { it.isNotBlank() && it.length < 50 }
+            .toMutableList()
+        detailAreas.select("li, p, div, span, td, tr").forEach { element ->
+            if (element.parents().any { it.tagName() in setOf("nav", "header", "footer") }) return@forEach
+            val text = element.ownText().trim()
+            val taggedValues = Regex("""(?i)^(?:genres?|tags?)\s*:\s*(.+)$""")
+                .matchEntire(text)?.groupValues?.get(1) ?: return@forEach
+            genreNames += taggedValues.split(Regex("""\s*[,;|•]\s*"""))
+                .map { it.trim().trim('.', ':') }
+                .filter { it.isNotBlank() && it.length < 50 }
+        }
+        manga.genre = genreNames.distinct().take(20).joinToString(", ").ifBlank { null }
         fun labeled(label: String): String? = detailAreas.select("li, p, div, span, td, tr").asSequence()
             .filter { item -> item.parents().none { it.tagName() in setOf("nav", "header", "footer") } }
             .map { it.ownText().ifBlank { it.text() }.trim() }
@@ -344,24 +352,11 @@ class GenericSource(
         val current = runCatching { URI(currentUrl) }.getOrNull() ?: return null
         val identity = chapterPageIdentity(current) ?: return null
         val currentPage = paginationNumber(currentUrl) ?: 1
-        return doc.select(
-            "a[rel=next][href], ul.pagination a[href], .pagination a[href], .page-numbers[href], " +
-                "nav[aria-label] a[href], .pages a[href], a[aria-label][href]"
-        ).asSequence()
-            .filter { anchor ->
-                val label = "${anchor.text()} ${anchor.attr("aria-label")} ${anchor.className()}"
-                val nav = anchor.parents().firstOrNull { it.tagName() == "nav" }
-                val isPageLink = anchor.attr("rel").contains("next", ignoreCase = true) ||
-                    anchor.hasClass("next") || anchor.hasClass("page-numbers") ||
-                    label.contains("next", ignoreCase = true) ||
-                    anchor.parents().any { it.hasClass("pagination") || it.hasClass("pages") } ||
-                    nav?.attr("aria-label")?.contains("pagination", ignoreCase = true) == true
-                isPageLink && (nav == null || nav.attr("aria-label").isBlank() ||
-                    nav.attr("aria-label").contains("pagination", ignoreCase = true))
-            }
+        return doc.select("a[href]").asSequence()
             .mapNotNull { anchor ->
                 val uri = runCatching { URI(anchor.absUrl("href")) }.getOrNull() ?: return@mapNotNull null
                 if (host(uri.toString()) != site || chapterPageIdentity(uri) != identity) return@mapNotNull null
+                if (!isPaginationLink(anchor, uri)) return@mapNotNull null
                 val number = paginationNumber(uri.toString()) ?: return@mapNotNull null
                 if (number <= currentPage) return@mapNotNull null
                 number to uri.toString()
@@ -372,11 +367,10 @@ class GenericSource(
     private fun paginationNumber(url: String): Int? {
         val uri = runCatching { URI(url) }.getOrNull() ?: return null
         val query = uri.rawQuery.orEmpty().split('&').associate {
-            it.substringBefore('=') to it.substringAfter('=', "").toIntOrNull()
+            it.substringBefore('=').lowercase() to it.substringAfter('=', "").toIntOrNull()
         }
-        query["page"]?.let { return it }
-        query["paged"]?.let { return it }
-        query["p"]?.let { return it }
+        listOf("page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page")
+            .firstNotNullOfOrNull { query[it] }?.let { return it }
         return Regex("""(?:^|/)page/(\d+)(?:/|$)""")
             .find(uri.path.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
     }
@@ -417,27 +411,38 @@ class GenericSource(
         val current = runCatching { URI(currentUrl) }.getOrNull() ?: return null
         val currentIdentity = chapterPageIdentity(current) ?: return null
         val currentNumber = chapterPageNumber(current) ?: 1
-        val candidates = doc.select(
-            "a[rel=next][href], .chapter-pagination a[href], .chapter-content-pagination a[href], " +
-                ".pagination a[href], .page-links a[href], a.next_page[href], a[aria-label][href]"
-        ).asSequence()
-            .filter { anchor ->
-                val label = "${anchor.text()} ${anchor.attr("aria-label")} ${anchor.className()}"
-                anchor.hasAttr("rel") && anchor.attr("rel").contains("next", ignoreCase = true) ||
-                    anchor.hasClass("next") || anchor.hasClass("next_page") ||
-                    label.contains("next page", ignoreCase = true) ||
-                    anchor.parents().any { it.hasClass("pagination") || it.hasClass("chapter-pagination") || it.hasClass("page-links") }
+        val candidates = doc.select("a[href]").asSequence()
+            .mapNotNull { anchor ->
+                val uri = runCatching { URI(anchor.absUrl("href")) }.getOrNull() ?: return@mapNotNull null
+                anchor to uri
             }
-            .map { it.absUrl("href") }
-            .mapNotNull { raw -> runCatching { URI(raw) }.getOrNull() }
-            .filter { uri ->
+            .filter { (anchor, uri) ->
                 uri.host?.removePrefix("www.")?.equals(current.host?.removePrefix("www."), true) == true &&
                     chapterPageIdentity(uri) == currentIdentity &&
-                    (chapterPageNumber(uri) ?: 1) > currentNumber
+                    (chapterPageNumber(uri) ?: 1) > currentNumber &&
+                    isPaginationLink(anchor, uri)
             }
+            .map { it.second }
             .distinctBy { it.toString() }
             .minByOrNull { chapterPageNumber(it) ?: Int.MAX_VALUE }
         return candidates?.toString()
+    }
+
+    private fun isPaginationLink(anchor: Element, uri: URI): Boolean {
+        if (uri.rawQuery.orEmpty().split('&').none {
+                it.substringBefore('=').equals("p", ignoreCase = true)
+            }) return true
+        val label = "${anchor.text()} ${anchor.attr("aria-label")} ${anchor.className()}"
+        return anchor.attr("rel").contains("next", ignoreCase = true) ||
+            anchor.hasClass("next") || anchor.hasClass("next_page") || anchor.hasClass("page-numbers") ||
+            label.contains("next", ignoreCase = true) ||
+            anchor.parents().any {
+                it.hasClass("pagination") || it.hasClass("pages") ||
+                    it.hasClass("chapter-pagination") || it.hasClass("page-links")
+            } ||
+            anchor.parents().any {
+                it.tagName() == "nav" && it.attr("aria-label").contains("pagination", ignoreCase = true)
+            }
     }
 
     private fun chapterPageIdentity(uri: URI): String? {
@@ -445,7 +450,10 @@ class GenericSource(
         if (path.isBlank()) return null
         val cleanPath = path.replace(Regex("""(?i)/(?:page|pages)/\d+$"""), "")
         val query = uri.rawQuery.orEmpty().split('&')
-            .filterNot { it.substringBefore('=').lowercase() in setOf("page", "paged", "p", "page_num") }
+            .filterNot {
+                it.substringBefore('=').lowercase() in
+                    setOf("page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page")
+            }
             .sorted()
             .joinToString("&")
         return "${uri.host?.removePrefix("www.")?.lowercase()}:$cleanPath?$query"
@@ -455,7 +463,9 @@ class GenericSource(
         val query = uri.rawQuery.orEmpty().split('&').mapNotNull { pair ->
             val key = pair.substringBefore('=').lowercase()
             val value = pair.substringAfter('=', "")
-            if (key in setOf("page", "paged", "p", "page_num")) value.toIntOrNull() else null
+            if (key in setOf("page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page")) {
+                value.toIntOrNull()
+            } else null
         }.firstOrNull()
         if (query != null) return query
         return Regex("""(?i)/(?:page|pages)/(\d+)/?$""")
