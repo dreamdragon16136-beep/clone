@@ -325,6 +325,10 @@ class GenericSource(
         }
 
         var d = doc(manga.url)
+        if (novel) {
+            val chapterIndexUrl = novelChapterIndexUrl(d, site, mangaPath)
+            if (chapterIndexUrl != null) d = doc(chapterIndexUrl)
+        }
         collect(d)
         if (novel) {
             val visited = mutableSetOf(d.location())
@@ -346,6 +350,20 @@ class GenericSource(
         if (list.isEmpty()) throw IOException("No chapters could be read from this site")
         return list.filter { it.chapterNumber >= 0f }.sortedByDescending { it.chapterNumber } + list.filter { it.chapterNumber < 0f }
     }
+
+    private fun novelChapterIndexUrl(doc: Document, site: String?, mangaPath: String): String? =
+        doc.select("a[href]").asSequence()
+            .mapNotNull { anchor ->
+                val url = anchor.absUrl("href")
+                val uri = runCatching { URI(url) }.getOrNull() ?: return@mapNotNull null
+                val path = uri.path.orEmpty().trimEnd('/')
+                if (host(url) != site || path == mangaPath) return@mapNotNull null
+                val label = "${anchor.text()} ${anchor.attr("title")} ${anchor.attr("aria-label")}"
+                val chapterIndexPath = path.contains(Regex("""(?i)/(?:all[-_]?chapters?|chapter[-_]?list)(?:/|$)"""))
+                val chapterIndexLabel = label.contains(Regex("""(?i)\b(?:all|full|view)\s+chapters?\b|\bchapter\s+list\b"""))
+                if (chapterIndexPath || chapterIndexLabel) url else null
+            }
+            .firstOrNull()
 
     private fun nextNovelChapterPage(doc: Document, site: String?): String? {
         val currentUrl = doc.location()
@@ -369,9 +387,12 @@ class GenericSource(
         val query = uri.rawQuery.orEmpty().split('&').associate {
             it.substringBefore('=').lowercase() to it.substringAfter('=', "").toIntOrNull()
         }
-        listOf("page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page")
+        listOf(
+            "page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page",
+            "start", "offset", "limitstart", "cstart"
+        )
             .firstNotNullOfOrNull { query[it] }?.let { return it }
-        return Regex("""(?:^|/)page/(\d+)(?:/|$)""")
+        return Regex("""(?:^|/)(?:page/|page-)(\d+)(?:/|$)""")
             .find(uri.path.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
     }
 
@@ -448,11 +469,14 @@ class GenericSource(
     private fun chapterPageIdentity(uri: URI): String? {
         val path = uri.path.orEmpty().trimEnd('/')
         if (path.isBlank()) return null
-        val cleanPath = path.replace(Regex("""(?i)/(?:page|pages)/\d+$"""), "")
+        val cleanPath = path.replace(Regex("""(?i)/(?:pages?/|page-)\d+$"""), "")
         val query = uri.rawQuery.orEmpty().split('&')
             .filterNot {
                 it.substringBefore('=').lowercase() in
-                    setOf("page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page")
+                    setOf(
+                        "page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page",
+                        "start", "offset", "limitstart", "cstart"
+                    )
             }
             .sorted()
             .joinToString("&")
@@ -463,12 +487,16 @@ class GenericSource(
         val query = uri.rawQuery.orEmpty().split('&').mapNotNull { pair ->
             val key = pair.substringBefore('=').lowercase()
             val value = pair.substringAfter('=', "")
-            if (key in setOf("page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page")) {
+            if (key in setOf(
+                    "page", "paged", "p", "page_num", "page_no", "pageno", "pg", "cpage", "chapter_page",
+                    "start", "offset", "limitstart", "cstart"
+                )
+            ) {
                 value.toIntOrNull()
             } else null
         }.firstOrNull()
         if (query != null) return query
-        return Regex("""(?i)/(?:page|pages)/(\d+)/?$""")
+        return Regex("""(?i)/(?:pages?/|page-)(\d+)/?$""")
             .find(uri.path.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
     }
 

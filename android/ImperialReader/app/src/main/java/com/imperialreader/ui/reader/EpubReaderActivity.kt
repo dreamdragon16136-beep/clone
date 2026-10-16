@@ -74,6 +74,7 @@ class EpubReaderActivity : AppCompatActivity() {
     private var transientEpubFile: File? = null
     private var readerTheme = 0
     private var horizontalReading = false
+    private var pageTurnPending = false
     private var pendingEndPosition = false
     private var pendingResumePage = 0
     private var seekingProgress = false
@@ -312,8 +313,8 @@ class EpubReaderActivity : AppCompatActivity() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
                 if (!horizontalReading) return false
                 when {
-                    e.x < web.width / 3f -> moveReadingPage(-1)
-                    e.x > web.width * 2f / 3f -> moveReadingPage(1)
+                    e.x < web.width / 3f -> handleGestureSwipe(-1)
+                    e.x > web.width * 2f / 3f -> handleGestureSwipe(1)
                 }
                 return true
             }
@@ -323,7 +324,7 @@ class EpubReaderActivity : AppCompatActivity() {
                 val dx = e2.rawX - e1.rawX
                 val dy = e2.rawY - e1.rawY
                 if (abs(dx) < 48 * resources.displayMetrics.density || abs(dx) <= abs(dy)) return false
-                handleSwipe(if (dx < 0) 1 else -1)
+                handleGestureSwipe(if (dx < 0) 1 else -1)
                 return true
             }
         })
@@ -400,6 +401,13 @@ class EpubReaderActivity : AppCompatActivity() {
         )
     }
 
+    private fun handleGestureSwipe(direction: Int) {
+        if (pageTurnPending) return
+        pageTurnPending = true
+        handleSwipe(direction)
+        web.postDelayed({ pageTurnPending = false }, 300)
+    }
+
     private fun handleSwipe(direction: Int) {
         if (!horizontalReading) {
             if (epubChapterIndex in epubChapters.indices) {
@@ -460,7 +468,7 @@ class EpubReaderActivity : AppCompatActivity() {
                 "var dim=Math.max(1,window.innerWidth),x=window.scrollX||r.scrollLeft||b.scrollLeft;" +
                 "var extent=Math.max(r.scrollWidth,b.scrollWidth),maxPage=Math.max(0,Math.ceil(extent/dim)-1);" +
                 "var page=Math.round(x/dim),next=page+$directionLiteral;" +
-                "if(next>=0&&next<=maxPage){window.scrollTo({left:Math.min(next*dim,Math.max(0,extent-dim)),top:0,behavior:'smooth'});return true;}return false;})()"
+                "if(next>=0&&next<=maxPage){window.scrollTo(next*dim,0);return true;}return false;})()"
         ) { moved ->
             if (moved != "true") moveSection(directionLiteral)
         }

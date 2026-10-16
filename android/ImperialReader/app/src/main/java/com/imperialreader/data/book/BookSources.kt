@@ -730,7 +730,9 @@ private class LunarXSource : BookSource {
         val doc = Jsoup.parse(fetchHtml(url), url)
         val content = doc.select(
             "article, main, section, .chapter-content, .chapter__content, .novel-content, " +
-                ".chapter-body, .reader-content, .reading-content, .text-content, " +
+                ".chapter-body, .chapter-text, .reader, .reader-content, .novel-reader, " +
+                ".reading-content, .text-content, .prose, [class*=chapter-text], [id*=chapter-text], " +
+                "[class*=reader], [id*=reader], " +
                 "[class*=content], [id*=content]"
         ).map { candidate ->
             candidate.clone().apply {

@@ -16,7 +16,7 @@ object LibraryActions {
      */
     suspend fun addToLibrary(ctx: Context, manga: MangaEntity): Boolean {
         val app = ctx.app
-        if (!confirmDuplicate(ctx, manga)) return false
+        if (!confirmLibraryEntry(ctx, manga)) return false
         val hasCategories = app.db.categoryDao().getAll().isNotEmpty()
         val category = if (hasCategories) (chooseCategory(ctx, 0L) ?: return false) else 0L
         app.repo.toggleFavorite(manga)
@@ -25,7 +25,7 @@ object LibraryActions {
     }
 
     /** true = go ahead (no duplicate, or the user chose "Add anyway"). */
-    private suspend fun confirmDuplicate(ctx: Context, manga: MangaEntity): Boolean {
+    suspend fun confirmLibraryEntry(ctx: Context, manga: MangaEntity): Boolean {
         val duplicates = ctx.app.repo.findDuplicates(manga)
         if (duplicates.isEmpty()) return true
         val lines = duplicates.joinToString("\n") {

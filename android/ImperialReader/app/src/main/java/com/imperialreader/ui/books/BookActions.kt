@@ -7,6 +7,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.imperialreader.data.book.BookItem
 import com.imperialreader.data.book.BookSources
 import com.imperialreader.data.db.LOCAL_SOURCE_ID
+import com.imperialreader.data.db.MangaEntity
 import com.imperialreader.data.network.await
 import com.imperialreader.data.storage.LocalScanner
 import com.imperialreader.data.source.SManga
@@ -14,6 +15,7 @@ import com.imperialreader.ui.details.MangaDetailsActivity
 import com.imperialreader.util.app
 import com.imperialreader.util.sanitize
 import com.imperialreader.util.toast
+import com.imperialreader.ui.common.LibraryActions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -86,7 +88,7 @@ object BookActions {
                         coverUrl = item.coverUrl ?: manga.coverUrl
                     )
                 )
-                if (!manga.favorite) app.repo.toggleFavorite(manga)
+                if (!manga.favorite && !LibraryActions.addToLibrary(activity, manga)) return@launch
                 app.repo.refresh(manga)
                 activity.startActivity(MangaDetailsActivity.intent(activity, manga.id))
             } catch (e: CancellationException) {
@@ -112,12 +114,14 @@ object BookActions {
     }
 
     private fun addToLibrary(activity: AppCompatActivity, item: BookItem) {
-        activity.toast("Downloading “${item.title}”…")
         val app = activity.applicationContext.app
         val queueKey = "epub:${item.sourceId}:${item.key}"
-        app.downloads.reportExternalDownload(queueKey, item.title, "Downloading EPUB")
         activity.lifecycleScope.launch {
             try {
+                val candidate = MangaEntity(source = item.sourceId, url = item.id, title = item.title)
+                if (!LibraryActions.confirmLibraryEntry(activity, candidate)) return@launch
+                activity.toast("Downloading “${item.title}”…")
+                app.downloads.reportExternalDownload(queueKey, item.title, "Downloading EPUB")
                 val id = withContext(Dispatchers.IO) { download(activity.applicationContext, item) }
                 activity.startActivity(MangaDetailsActivity.intent(activity, id))
             } catch (e: CancellationException) {

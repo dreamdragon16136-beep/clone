@@ -201,20 +201,21 @@ class GlobalSearchActivity : AppCompatActivity() {
         val combine = app.prefs.searchCombine
         val onlyResults = app.prefs.searchOnlyResults
 
-        val extra = all.filter { it.kind != KIND_SOURCE && (it.cards.isNotEmpty() || it.error != null) }
-        val sourceErrors = if (combine) all.filter { it.kind == KIND_SOURCE && it.error != null } else emptyList()
+        val extra = all.asSequence()
+            .filter { it.kind != KIND_SOURCE && (it.cards.isNotEmpty() || (!onlyResults && it.error != null)) }
+            .map { if (onlyResults) it.copy(error = null) else it }
+            .toList()
         val perSource = if (combine) emptyList() else {
             val list = all.filter { it.kind == KIND_SOURCE }
-            sortSources(if (onlyResults) list.filter { it.cards.isNotEmpty() } else list)
+            sortSources(if (onlyResults) list.filter { it.cards.isNotEmpty() }.map { it.copy(error = null) } else list)
         }
-        sectionAdapter.submitList(extra + sourceErrors + perSource)
+        sectionAdapter.submitList(extra + perSource)
 
         val rows = if (combine) visibleGroups(grouped).map { toRow(it) } else emptyList()
         titleAdapter.submitList(rows)
 
         val searching = all.any { it.loading }
-        val anything = extra.isNotEmpty() || sourceErrors.isNotEmpty() ||
-            rows.isNotEmpty() || perSource.any { it.cards.isNotEmpty() }
+        val anything = extra.isNotEmpty() || rows.isNotEmpty() || perSource.any { it.cards.isNotEmpty() }
         emptyText.visibility = if (all.isNotEmpty() && !searching && !anything) View.VISIBLE else View.GONE
         val errors = all.count { it.error != null }
         emptyText.text = if (errors > 0) "No results • $errors source(s) could not be reached" else "No results"
@@ -396,29 +397,52 @@ class GlobalSearchActivity : AppCompatActivity() {
                 sources.map { s ->
                     async {
                         val found: List<SManga> = try {
-                            val titles = withTimeout(12_000L) {
-                                searchSem.withPermit {
-                                    (if (q.isBlank()) s.getPopular(1) else s.search(q, 1)).mangas
-                                }
-                            }
-                            var genreError: String? = null
-                            val genres = if (q.length >= 2) {
+                            val titleLookup = async {
                                 try {
-                                    withTimeout(8_000L) {
-                                        searchSem.withPermit { s.searchByGenre(q, 1).mangas }
+                                    withTimeout(12_000L) {
+                                        searchSem.withPermit {
+                                            (if (q.isBlank()) s.getPopular(1) else s.search(q, 1)).mangas to null
+                                        }
                                     }
                                 } catch (e: TimeoutCancellationException) {
-                                    genreError = "Genre search timed out"
-                                    emptyList()
+                                    emptyList<SManga>() to "Search timed out"
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {
-                                    genreError = "Genre search failed: ${e.message ?: "source error"}"
-                                    emptyList()
+                                    emptyList<SManga>() to (e.message ?: "Search failed")
                                 }
-                            } else emptyList()
-                            val candidates = (titles + genres).distinctBy { it.url }.take(20)
-                            genreError?.let { message -> update(s.id) { it.copy(error = message) } }
+                            }
+                            val genreLookup = if (q.length >= 2) async {
+                                try {
+                                    withTimeout(8_000L) {
+                                        searchSem.withPermit { s.searchByGenre(q, 1).mangas to null }
+                                    }
+                                } catch (e: TimeoutCancellationException) {
+                                    emptyList<SManga>() to "Genre search timed out"
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    emptyList<SManga>() to "Genre search failed: ${e.message ?: "source error"}"
+                                }
+                            } else null
+                            val (titles, titleError) = titleLookup.await()
+                            val (genres, genreError) = genreLookup?.await() ?: (emptyList<SManga>() to null)
+                            val titleUrls = titles.mapTo(HashSet()) { it.url }
+                            val candidates = (titles + genres)
+                                .distinctBy { it.url }
+                                .sortedWith(
+                                    compareBy<SManga> { searchRelevance(it.title, q) }
+                                        .thenBy { if (it.url in titleUrls) 0 else 1 }
+                                        .thenBy { it.title }
+                                )
+                                .take(30)
+                            val sourceError = listOfNotNull(
+                                titleError?.let { "Title search failed: $it" },
+                                genreError
+                            ).joinToString("\n").ifBlank { null }
+                            sourceError?.let { error ->
+                                update(s.id) { it.copy(error = error) }
+                            }
                             if (!hasSearchFilters()) {
                                 candidates
                             } else {
