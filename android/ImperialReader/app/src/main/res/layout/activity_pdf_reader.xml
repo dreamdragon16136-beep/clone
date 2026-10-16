@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/pdfReaderRoot"
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:orientation="vertical" android:background="@color/black">
     <com.google.android.material.appbar.MaterialToolbar
@@ -22,6 +23,7 @@
         android:layout_width="match_parent" android:layout_height="wrap_content"
         android:layout_marginStart="16dp" android:layout_marginEnd="16dp"/>
     <LinearLayout
+        android:id="@+id/pdfControls"
         android:layout_width="match_parent" android:layout_height="wrap_content"
         android:gravity="center" android:orientation="horizontal"
         android:background="@color/nav" android:paddingBottom="4dp">

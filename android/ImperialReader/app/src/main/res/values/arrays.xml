@@ -52,4 +52,20 @@
         <item>1440</item>
         <item>10080</item>
     </string-array>
+    <string-array name="library_update_interval_names">
+        <item>Every time the app starts</item>
+        <item>Every 30 minutes</item>
+        <item>Every hour</item>
+        <item>Every 12 hours</item>
+        <item>Every 24 hours</item>
+        <item>Every 7 days</item>
+    </string-array>
+    <string-array name="library_update_interval_values">
+        <item>0</item>
+        <item>30</item>
+        <item>60</item>
+        <item>720</item>
+        <item>1440</item>
+        <item>10080</item>
+    </string-array>
 </resources>

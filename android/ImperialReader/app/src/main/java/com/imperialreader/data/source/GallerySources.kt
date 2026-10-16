@@ -82,11 +82,12 @@ class HentaiDbSource : HttpSource() {
 }
 
 /** HTML gallery adapter for the nhentai.xxx domain. */
-class NhentaiXxxSource : HttpSource() {
-    override val id = "nhentai_xxx"
-    override val name = "nhentai.xxx"
+open class NhentaiXxxSource(
+    override val id: String = "nhentai_xxx",
+    override val name: String = "nhentai.xxx",
+    override val baseUrl: String = "https://nhentai.xxx"
+) : HttpSource() {
     override val lang = "en"
-    override val baseUrl = "https://nhentai.xxx"
     override val nsfw = true
 
     override suspend fun getPopular(page: Int): MangasPage =
@@ -173,7 +174,7 @@ class NhentaiXxxSource : HttpSource() {
 
     private fun isGalleryImage(url: String): Boolean {
         val host = runCatching { URI(url).host.orEmpty().lowercase() }.getOrDefault("")
-        return host.endsWith("nhentaimg.com") &&
+        return (host.endsWith("nhentaimg.com") || host.endsWith("imhentai.xxx")) &&
             !url.substringBefore('?').endsWith("/thumb.jpg", ignoreCase = true)
     }
 
@@ -192,6 +193,12 @@ class NhentaiXxxSource : HttpSource() {
     private fun galleryId(url: String): String? =
         Regex("""/g/(\d+)(?:/|$)""").find(url)?.groupValues?.get(1)
 }
+
+class ImhentaiXxxSource : NhentaiXxxSource(
+    id = "imhentai_xxx",
+    name = "imhentai.xxx",
+    baseUrl = "https://imhentai.xxx"
+)
 
 /** 9hentai.so's live JSON API provides search results, gallery metadata, and page counts. */
 class NineHentaiSource : HttpSource() {

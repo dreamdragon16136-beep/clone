@@ -95,7 +95,9 @@ class EpubReaderActivity : AppCompatActivity() {
     private fun applyTheme() {
         val (bg, fg, link) = themes[readerTheme]
         val flow = if (horizontalReading) {
-            "html{height:100%;overflow-x:auto;overflow-y:hidden}body{height:100vh!important;overflow-x:auto;overflow-y:hidden;column-width:calc(100vw - 24px);column-gap:24px;column-fill:auto}"
+            "html{height:100%;direction:ltr;overflow-x:auto;overflow-y:hidden}" +
+                "body{height:100vh!important;direction:ltr;unicode-bidi:plaintext;overflow-x:auto;overflow-y:hidden;" +
+                "column-width:calc(100vw - 24px);column-gap:24px;column-fill:auto}"
         } else {
             "html{height:auto;overflow:auto}body{height:auto!important;overflow:auto;column-width:auto;column-gap:normal}"
         }
@@ -246,7 +248,7 @@ class EpubReaderActivity : AppCompatActivity() {
                     } else if (!seekingProgress) {
                         sectionProgress.progress = index
                     }
-                    txtSection.text = "Page ${page + 1}/$total • ${currentBook.titles[index]}"
+                    txtSection.text = progressDescription(page, total, currentBook.titles[index])
                     val storedPage = if (currentBook.spine.size == 1) page else index
                     val atEnd = index == currentBook.spine.lastIndex && page >= total - 1
                     lifecycleScope.launch {
@@ -285,8 +287,8 @@ class EpubReaderActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<View>(R.id.btnPrev).setOnClickListener { moveSection(-1) }
-        findViewById<View>(R.id.btnNext).setOnClickListener { moveSection(1) }
+        findViewById<View>(R.id.btnPrev).setOnClickListener { moveReadingPage(-1) }
+        findViewById<View>(R.id.btnNext).setOnClickListener { moveReadingPage(1) }
         findViewById<View>(R.id.btnSmaller).setOnClickListener { setZoom(zoom - 10) }
         findViewById<View>(R.id.btnLarger).setOnClickListener { setZoom(zoom + 10) }
         txtSection.setOnClickListener { showContents() }
@@ -329,7 +331,8 @@ class EpubReaderActivity : AppCompatActivity() {
                 }
                 app.repo.recordHistory(chapterId)
                 val startSection = if (loaded.spine.size == 1) 0
-                else if (chapter != null && !chapter.read) chapter.lastPageRead else 0
+                else if (chapter != null && !chapter.read) chapter.lastPageRead.coerceIn(0, loaded.spine.lastIndex)
+                else 0
                 show(startSection)
             } catch (e: CancellationException) {
                 throw e
@@ -413,13 +416,21 @@ class EpubReaderActivity : AppCompatActivity() {
         sectionProgress.max = (b.spine.size - 1).coerceAtLeast(0)
         sectionProgress.progress = i
         web.loadUrl(Uri.fromFile(b.spine[i]).toString())
-        txtSection.text = "Page ${i + 1}/${b.spine.size} • ${b.titles[i]}"
+        txtSection.text = progressDescription(i, b.spine.size, b.titles[i])
+    }
+
+    private fun progressDescription(page: Int, total: Int, sectionTitle: String): String {
+        val chapter = if (epubChapterIndex in epubChapters.indices) {
+            "Chapter ${epubChapterIndex + 1}/${epubChapters.size} • "
+        } else ""
+        return "$chapter${page + 1}/$total • $sectionTitle"
     }
 
     private fun moveSection(direction: Int) {
         val b = book ?: return
         val targetSection = index + direction
         if (targetSection in b.spine.indices) {
+            pendingEndPosition = horizontalReading && direction < 0
             show(targetSection)
             return
         }
@@ -429,6 +440,23 @@ class EpubReaderActivity : AppCompatActivity() {
         if (targetChapter !in epubChapters.indices) return
         val targetStart = if (direction > 0) 0 else Int.MAX_VALUE
         openAdjacentChapter(targetChapter, targetStart)
+    }
+
+    private fun moveReadingPage(direction: Int) {
+        if (!horizontalReading) {
+            moveSection(direction)
+            return
+        }
+        val directionLiteral = direction.coerceIn(-1, 1)
+        web.evaluateJavascript(
+            "(function(){var r=document.documentElement,b=document.body;" +
+                "var x=window.scrollX||r.scrollLeft||b.scrollLeft;" +
+                "var max=Math.max(0,Math.max(r.scrollWidth,b.scrollWidth)-window.innerWidth);" +
+                "if(($directionLiteral<0&&x>2)||($directionLiteral>0&&x<max-2)){" +
+                "window.scrollTo(Math.max(0,Math.min(max,x+$directionLiteral*window.innerWidth)),window.scrollY);return true;}return false;})()"
+        ) { moved ->
+            if (moved != "true") moveSection(directionLiteral)
+        }
     }
 
     private fun openAdjacentChapter(targetIndex: Int, startSection: Int) {

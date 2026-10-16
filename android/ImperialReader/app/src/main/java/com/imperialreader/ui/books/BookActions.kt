@@ -25,6 +25,19 @@ import java.io.IOException
 object BookActions {
 
     fun show(activity: AppCompatActivity, item: BookItem) {
+        activity.lifecycleScope.launch {
+            val detailed = try {
+                BookSources.get(item.sourceId)?.details(item) ?: item
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                item
+            }
+            showDetails(activity, detailed)
+        }
+    }
+
+    private fun showDetails(activity: AppCompatActivity, item: BookItem) {
         val details = buildString {
             append(item.author ?: "Unknown author")
             item.artist?.takeIf { it.isNotBlank() }?.let { append("\nArtist: ").append(it) }

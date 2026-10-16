@@ -4,14 +4,17 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.imperialreader.data.cover.AutomaticCoverRefreshScheduler
 import com.imperialreader.data.storage.LocalScanner
+import com.imperialreader.data.update.LibraryUpdateScheduler
 import com.imperialreader.util.app
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 import androidx.fragment.app.Fragment
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.imperialreader.R
@@ -43,15 +46,25 @@ class MainActivity : AppCompatActivity() {
         if (savedInstanceState == null) {
             nav.selectedItemId = R.id.nav_library
             AutomaticCoverRefreshScheduler.onAppStart(this)
+            LibraryUpdateScheduler.onAppStart(this)
         }
 
         if (app.prefs.localCovers && app.prefs.storageUri != null && !scannedThisProcess) {
             scannedThisProcess = true
             lifecycleScope.launch { runCatching { LocalScanner(applicationContext).scan() } }
         }
-        if (app.prefs.refreshOnStart && !refreshedThisProcess) {
+        val updateInterval = TimeUnit.MINUTES.toMillis(app.prefs.libraryUpdateIntervalMinutes)
+        val updateDue = updateInterval == 0L ||
+            System.currentTimeMillis() - app.prefs.libraryUpdatedAt >= updateInterval
+        if (app.prefs.refreshOnStart && app.prefs.libraryUpdateIntervalMinutes == 0L &&
+            updateDue && !refreshedThisProcess
+        ) {
             refreshedThisProcess = true
-            lifecycleScope.launch { runCatching { app.repo.updateLibrary() } }
+            lifecycleScope.launch {
+                runCatching { app.repo.updateLibrary() }
+                    .onSuccess { app.prefs.libraryUpdatedAt = System.currentTimeMillis() }
+                    .onFailure { Log.e("MainActivity", "Automatic library update failed", it) }
+            }
         }
 
         if (Build.VERSION.SDK_INT >= 33 &&

@@ -17,6 +17,7 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.ChipGroup
 import com.imperialreader.R
 import com.imperialreader.data.network.CloudflareException
+import com.imperialreader.data.source.MangasPage
 import com.imperialreader.data.source.SManga
 import com.imperialreader.data.source.Source
 import com.imperialreader.ui.common.CardItem
@@ -27,7 +28,10 @@ import com.imperialreader.util.app
 import com.imperialreader.util.toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 class SourceBrowseActivity : AppCompatActivity() {
 
@@ -54,6 +58,7 @@ class SourceBrowseActivity : AppCompatActivity() {
     private var hasNext = true
     private var loading = false
     private var loadJob: Job? = null
+    private var searchDebounceJob: Job? = null
     private val items = mutableListOf<SManga>()
     private var favoriteUrls: Set<String> = emptySet()
 
@@ -97,17 +102,20 @@ class SourceBrowseActivity : AppCompatActivity() {
         searchView.queryHint = "Search ${source.name}"
         searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
             override fun onQueryTextSubmit(q: String?): Boolean {
-                val text = q.orEmpty().trim()
-                if (text.isNotBlank()) {
-                    query = text
-                    mode = 2
-                    reset()
-                }
+                searchDebounceJob?.cancel()
+                applySearchQuery(q.orEmpty())
                 searchView.clearFocus()
                 return true
             }
 
-            override fun onQueryTextChange(newText: String?): Boolean = true
+            override fun onQueryTextChange(newText: String?): Boolean {
+                searchDebounceJob?.cancel()
+                searchDebounceJob = lifecycleScope.launch {
+                    delay(350)
+                    applySearchQuery(newText.orEmpty())
+                }
+                return true
+            }
         })
         searchItem.setOnActionExpandListener(object : MenuItem.OnActionExpandListener {
             override fun onMenuItemActionExpand(item: MenuItem): Boolean = true
@@ -162,6 +170,14 @@ class SourceBrowseActivity : AppCompatActivity() {
         loadPage()
     }
 
+    private fun applySearchQuery(text: String) {
+        query = text.trim()
+        mode = if (query.isBlank()) {
+            if (findViewById<ChipGroup>(R.id.chips).checkedChipId == R.id.chipLatest) 1 else 0
+        } else 2
+        reset()
+    }
+
     private fun loadPage() {
         if (loading) return
         loading = true
@@ -169,16 +185,32 @@ class SourceBrowseActivity : AppCompatActivity() {
         loadJob = lifecycleScope.launch {
             try {
                 favoriteUrls = app.db.mangaDao().favoriteUrls(source.id).toSet()
-                val result = when (mode) {
+                val titleResults = when (mode) {
                     0 -> source.getPopular(page)
                     1 -> source.getLatest(page)
                     else -> source.search(query, page)
                 }
-                result.mangas.forEach { m -> if (items.none { it.url == m.url }) items.add(m) }
-                hasNext = result.hasNextPage
+                var genreError: String? = null
+                val genreResults = if (mode == 2 && query.length >= 2) {
+                    try {
+                        withTimeout(12_000L) { source.searchByGenre(query, page) }
+                    } catch (e: TimeoutCancellationException) {
+                        genreError = "Genre search timed out"
+                        MangasPage(emptyList(), false)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        genreError = e.message ?: "Genre search failed"
+                        MangasPage(emptyList(), false)
+                    }
+                } else MangasPage(emptyList(), false)
+                (titleResults.mangas + genreResults.mangas).forEach { m ->
+                    if (items.none { it.url == m.url }) items.add(m)
+                }
+                hasNext = titleResults.hasNextPage || genreResults.hasNextPage
                 page++
                 render()
-                if (items.isEmpty()) showError("No results")
+                if (items.isEmpty()) showError(genreError?.let { "Genre search failed: $it" } ?: "No results")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

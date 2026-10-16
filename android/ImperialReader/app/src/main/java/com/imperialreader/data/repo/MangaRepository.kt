@@ -1,6 +1,7 @@
 package com.imperialreader.data.repo
 
 import android.content.Context
+import android.util.Log
 import androidx.room.withTransaction
 import com.imperialreader.data.db.ChapterEntity
 import com.imperialreader.data.db.HistoryEntity
@@ -216,7 +217,12 @@ class MangaRepository(private val ctx: Context) {
     }
 
     /** Refreshes every library entry (4 at a time). Returns the total number of new chapters. */
-    suspend fun updateLibrary(onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): Int = coroutineScope {
+    suspend fun updateLibrary(
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+        onFailure: (manga: MangaEntity, error: Exception) -> Unit = { manga, error ->
+            Log.w(TAG, "Could not update '${manga.title}'", error)
+        }
+    ): Int = coroutineScope {
         LocalScanner(ctx).scan()
         val favorites = db.mangaDao().getFavorites().filter { it.source != LOCAL_SOURCE_ID }
         val sem = Semaphore(4)
@@ -224,7 +230,14 @@ class MangaRepository(private val ctx: Context) {
         favorites.map { m ->
             async {
                 sem.withPermit {
-                    val n = runCatching { refresh(m) }.getOrDefault(0)
+                    val n = try {
+                        refresh(m)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        onFailure(m, e)
+                        0
+                    }
                     onProgress(done.incrementAndGet(), favorites.size)
                     n
                 }
@@ -243,4 +256,8 @@ class MangaRepository(private val ctx: Context) {
 
     private fun canonicalUrl(url: String): String =
         url.lowercase().substringAfter("://").removePrefix("www.").trimEnd('/')
+
+    private companion object {
+        const val TAG = "MangaRepository"
+    }
 }

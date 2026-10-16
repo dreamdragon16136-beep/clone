@@ -4,7 +4,9 @@ import android.net.Uri
 import com.imperialreader.App
 import com.imperialreader.data.db.LOCAL_SOURCE_ID
 import com.imperialreader.data.db.MangaEntity
+import com.imperialreader.data.network.CloudflareException
 import com.imperialreader.data.network.await
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -21,6 +23,7 @@ import org.json.JSONArray
 import org.jsoup.Jsoup
 import org.json.JSONObject
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.io.IOException
 import java.net.URLEncoder
 
@@ -45,6 +48,7 @@ data class NovelChapter(val title: String, val url: String)
 interface BookSource {
     val id: String
     val name: String
+    val webUrl: String? get() = null
 
     /** Short label shown in the Extensions list. */
     val description: String get() = ""
@@ -63,6 +67,24 @@ interface BookSource {
     suspend fun details(item: BookItem): BookItem = item
     suspend fun popular(page: Int): List<BookItem>
     suspend fun search(query: String, page: Int): List<BookItem>
+    suspend fun searchByGenre(query: String, page: Int): List<BookItem> {
+        val limiter = Semaphore(4)
+        return coroutineScope {
+            popular(page).take(8).map { item ->
+                async {
+                    try {
+                        limiter.withPermit {
+                            details(item).takeIf { it.genre?.contains(query, ignoreCase = true) == true }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+    }
 
     /** Direct link to the .epub file (some catalogs need a second request to find it). */
     suspend fun resolveEpubUrl(item: BookItem): String =
@@ -72,8 +94,15 @@ interface BookSource {
 internal suspend fun fetchHtml(url: String): String = withContext(Dispatchers.IO) {
     val request = Request.Builder().url(url).build()
     App.instance.network.client.await(request).use { resp ->
+        val html = resp.body?.string().orEmpty()
+        val cloudflare = resp.header("cf-mitigated")?.equals("challenge", ignoreCase = true) == true ||
+            (resp.code in setOf(403, 503) &&
+                (resp.header("Server")?.contains("cloudflare", true) == true || resp.header("cf-ray") != null)) ||
+            html.contains("<title>Just a moment", ignoreCase = true)
+        if (cloudflare) throw CloudflareException(url)
         if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-        resp.body?.string().orEmpty()
+        if (html.isBlank()) throw IOException("The source returned an empty response")
+        html
     }
 }
 
@@ -89,23 +118,28 @@ private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
 private fun webNovelDetails(item: BookItem, html: String): BookItem {
     val doc = Jsoup.parse(html, item.id)
-    val fields = doc.select(
+    val detailArea = doc.selectFirst(
+        ".book-info, .book-information, .novel-info, .book-meta, .book-detail, #book-info, #info"
+    ) ?: doc.body()
+    val fields = detailArea?.select(
         ".book-info li, .book-info p, .book-information li, .novel-info li, .novel-info p, .book-meta li, .info li"
-    )
+    ).orEmpty()
     fun field(label: String): String? = fields.firstNotNullOfOrNull { element ->
         val text = element.text().trim()
         if (text.startsWith(label, ignoreCase = true)) {
             text.substring(label.length).trim(' ', ':', '-').ifBlank { null }
         } else null
     }
-    val genres = doc.select(
-        ".genres a, .genre a, .tags a, .tag a, .book-info a[href*=genre], .book-info a[href*=tag]"
-    ).map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
-    val description = doc.selectFirst("#book-description, .book-description, .novel-description, .description")
+    val genres = detailArea?.select(
+        ".genres a, .genre a, .tags a, .tag a, a[href*=genre], a[href*=tag]"
+    ).orEmpty()
+        .filter { link -> link.parents().none { it.tagName() in setOf("nav", "header", "footer") } }
+        .map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
+    val description = detailArea?.selectFirst("#book-description, .book-description, .novel-description, .description")
         ?.text()?.trim()?.ifBlank { null }
     return item.copy(
         author = field("Author") ?: field("Authors")
-            ?: doc.selectFirst(".author a, .book-author a")?.text()?.trim()?.ifBlank { null }
+            ?: detailArea?.selectFirst(".author a, .book-author a")?.text()?.trim()?.ifBlank { null }
             ?: item.author,
         artist = field("Artist") ?: item.artist,
         genre = genres.joinToString(", ").ifBlank { null } ?: field("Genres") ?: field("Tags") ?: item.genre,
@@ -117,6 +151,7 @@ private fun webNovelDetails(item: BookItem, html: String): BookItem {
 class GutenbergSource : BookSource {
     override val id = "gutenberg"
     override val name = "Project Gutenberg"
+    override val webUrl = "https://www.gutenberg.org"
     override val description = "EPUB library • public-domain classics"
 
     override suspend fun popular(page: Int) = parse(fetchText("https://gutendex.com/books/?page=$page&mime_type=application%2Fepub"))
@@ -150,6 +185,7 @@ class GutenbergSource : BookSource {
 class InternetArchiveSource : BookSource {
     override val id = "archive"
     override val name = "Internet Archive"
+    override val webUrl = "https://archive.org"
     override val description = "EPUB library • openly downloadable books"
 
     override suspend fun popular(page: Int) = query("", page)
@@ -202,6 +238,7 @@ class RoyalRoadSource : BookSource {
     override val description = "Web novel • original web fiction"
     override val isWebNovel = true
     private val base = "https://www.royalroad.com"
+    override val webUrl = base
 
     override suspend fun popular(page: Int) = list("$base/fictions/best-rated?page=$page")
     override suspend fun search(query: String, page: Int) = list("$base/fictions/search?title=${enc(query)}&page=$page")
@@ -253,6 +290,7 @@ class NovelPhoenixSource : BookSource {
     override val description = "Web novel • paginated chapters"
     override val isWebNovel = true
     private val base = "https://novelphoenix.com"
+    override val webUrl = base
 
     override suspend fun popular(page: Int): List<BookItem> =
         if (page == 1) parseNovels("$base/ranking") else emptyList()
@@ -371,6 +409,7 @@ class NovelFireSource : BookSource {
     override val description = "Web novel • paginated chapters"
     override val isWebNovel = true
     private val base = "https://novelfire.net"
+    override val webUrl = base
 
     override suspend fun popular(page: Int): List<BookItem> =
         if (page == 1) parseNovels("$base/ranking") else emptyList()
@@ -482,6 +521,98 @@ class NovelFireSource : BookSource {
     }
 }
 
+class TapasNovelSource : BookSource {
+    override val id = "novel_tapas_io"
+    override val name = "Tapas Novels"
+    override val description = "Web novel • Tapas novel catalog"
+    override val isWebNovel = true
+    private val base = "https://tapas.io"
+    override val webUrl = base
+
+    override suspend fun popular(page: Int): List<BookItem> {
+        val url = "$base/landing-list/6${if (page > 1) "?page=$page" else ""}"
+        val doc = Jsoup.parse(fetchHtml(url), url)
+        return parseItems(doc)
+    }
+
+    override suspend fun search(query: String, page: Int): List<BookItem> {
+        if (query.isBlank()) return emptyList()
+        val url = "$base/search?q=${enc(query)}&t=NOVELS&page=$page"
+        val doc = Jsoup.parse(fetchHtml(url), url)
+        return parseItems(doc.body() ?: return emptyList())
+    }
+
+    private fun parseItems(container: Element): List<BookItem> =
+        container.select("a[href^=/series/], li[data-href^=/series/]").mapNotNull { card ->
+            val rawUrl = if (card.hasAttr("href")) card.attr("href") else card.attr("data-href")
+            val url = seriesUrl(rawUrl) ?: return@mapNotNull null
+            val image = card.selectFirst("img")
+            val title = card.attr("title").trim().ifBlank {
+                image?.attr("alt")?.trim().orEmpty().ifBlank { card.text().trim() }
+            }
+            if (title.isBlank()) return@mapNotNull null
+            BookItem(id, name, url, title, null, image?.let(::lazyImage), null)
+        }.distinctBy { it.id }
+
+    override suspend fun details(item: BookItem): BookItem {
+        val url = seriesUrl(item.id) ?: throw IOException("Invalid Tapas series address")
+        val doc = Jsoup.parse(fetchHtml("$url/info"), "$url/info")
+        val title = doc.selectFirst("h1")?.text()?.trim()?.ifBlank { null } ?: item.title
+        val author = doc.select("[class*=author] a, a[href*=/creator/]")
+            .map { it.text().trim() }.firstOrNull { it.isNotBlank() }
+        val genres = doc.select("a[href*=/genre/], .genre a, .genres a, .tag-list a")
+            .map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
+        return item.copy(
+            title = title,
+            author = author ?: item.author,
+            coverUrl = doc.selectFirst("meta[property=og:image]")?.attr("content")?.ifBlank { null } ?: item.coverUrl,
+            description = doc.selectFirst("meta[property=og:description], meta[name=description]")
+                ?.attr("content")?.trim()?.ifBlank { null } ?: item.description,
+            genre = genres.joinToString(", ").ifBlank { null } ?: item.genre
+        )
+    }
+
+    override suspend fun chapters(item: BookItem): List<NovelChapter> {
+        val url = seriesUrl(item.id) ?: throw IOException("Invalid Tapas series address")
+        val doc = Jsoup.parse(fetchHtml("$url/info"), "$url/info")
+        val chapters = doc.select(".episode-list a[href*=/episode/]").mapNotNull { anchor ->
+            val episode = episodeUrl(anchor.absUrl("href")) ?: return@mapNotNull null
+            val title = anchor.text().trim().ifBlank { anchor.attr("title").trim() }
+            if (title.isBlank()) null else NovelChapter(title, episode)
+        }.distinctBy { it.url }.reversed()
+        if (chapters.isEmpty()) throw IOException("Tapas returned no novel episodes")
+        return chapters
+    }
+
+    override suspend fun chapterHtml(chapter: NovelChapter): String {
+        val url = episodeUrl(chapter.url) ?: throw IOException("Invalid Tapas episode address")
+        val doc = Jsoup.parse(fetchHtml(url), url)
+        val content = doc.selectFirst("article.viewer__body")
+            ?: throw IOException("Tapas novel text was not found")
+        content.select("script, style, noscript, iframe, nav, header, footer, aside, form").remove()
+        if (content.select("p").none { it.text().isNotBlank() }) {
+            throw IOException("Tapas returned an empty novel episode")
+        }
+        return content.html()
+    }
+
+    private fun seriesUrl(raw: String): String? {
+        val uri = Uri.parse(if (raw.startsWith("http", true)) raw else "$base/${raw.removePrefix("/")}")
+        if (uri.host.orEmpty().lowercase() !in setOf("tapas.io", "www.tapas.io", "m.tapas.io")) return null
+        val path = uri.path.orEmpty().trimEnd('/')
+        if (!path.matches(Regex("""^/series/[^/]+$""", RegexOption.IGNORE_CASE))) return null
+        return "$base$path"
+    }
+
+    private fun episodeUrl(raw: String): String? {
+        val uri = Uri.parse(if (raw.startsWith("http", true)) raw else "$base/${raw.removePrefix("/")}")
+        if (uri.host.orEmpty().lowercase() !in setOf("tapas.io", "www.tapas.io", "m.tapas.io")) return null
+        val path = uri.path.orEmpty().trimEnd('/')
+        if (!path.matches(Regex("""^/episode/\d+$""", RegexOption.IGNORE_CASE))) return null
+        return "$base$path"
+    }
+}
+
 /** Any other web-novel site, read with the pattern-based scraper (best effort; some sites need a browser). */
 class WebNovelSource(
     override val id: String,
@@ -490,6 +621,7 @@ class WebNovelSource(
 ) : BookSource {
     override val description = "Web novel • best-effort"
     override val isWebNovel = true
+    override val webUrl = baseUrl
     private val engine = GenericSource(name, baseUrl, "en", false, novel = true)
 
     private fun toItem(m: SManga) = BookItem(
@@ -499,6 +631,8 @@ class WebNovelSource(
 
     override suspend fun popular(page: Int) = engine.getPopular(page).mangas.map { toItem(it) }
     override suspend fun search(query: String, page: Int) = engine.search(query, page).mangas.map { toItem(it) }
+    override suspend fun searchByGenre(query: String, page: Int) =
+        engine.searchByGenre(query, page).mangas.map { toItem(it) }
 
     override suspend fun details(item: BookItem): BookItem {
         val details = engine.getMangaDetails(
@@ -534,6 +668,8 @@ object BookSources {
         "Luxon Scan" to "https://luxonscan.com", "MtlNovel" to "https://www.mtlnovel.com",
         "Novel Buddy" to "https://novelbuddy.com", "Novel Light" to "https://novellight.net",
         "NovelPing" to "https://novelping.com", "NovelArrow" to "https://novelarrow.com",
+        "LunarX" to "https://lunarx.to",
+        "Ranobes" to "https://ranobes.net",
         "Novel Phoenix" to "https://novelphoenix.com", "NovelBin" to "https://novelbin.me",
         "NovelFire" to "https://novelfire.net", "NovelFull" to "https://novelfull.com",
         "PawRead" to "https://pawread.com", "Ranovel" to "https://ranovel.com",
@@ -545,12 +681,17 @@ object BookSources {
     )
 
     val all: List<BookSource> =
-        listOf(LocalBookSource(), GutenbergSource(), InternetArchiveSource(), RoyalRoadSource()) +
+        listOf(LocalBookSource(), GutenbergSource(), InternetArchiveSource(), RoyalRoadSource(), TapasNovelSource()) +
             novelSites.map { (name, url) ->
                 when (hostId(url, name)) {
                     "novelphoenix_com" -> NovelPhoenixSource()
                     "novelfire_net" -> NovelFireSource()
                     "novelping_com" -> NovelPingSource()
+                    "novelarrow_com" -> NovelPingSource(
+                        catalogId = "novel_novelarrow_com",
+                        displayName = "NovelArrow",
+                        siteUrl = url
+                    )
                     else -> WebNovelSource("novel_" + hostId(url, name), name, url)
                 }
             }

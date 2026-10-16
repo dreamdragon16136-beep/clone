@@ -8,6 +8,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.text.Editable
+import android.text.TextWatcher
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -41,6 +43,7 @@ import com.imperialreader.util.relativeTime
 import com.imperialreader.util.toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -111,6 +114,7 @@ class GlobalSearchActivity : AppCompatActivity() {
     private var genreFilter = ""
     private var artistFilter = ""
     private var searchJob: Job? = null
+    private var searchDebounceJob: Job? = null
 
     private lateinit var emptyText: TextView
     private lateinit var sprite: StarSpriteView
@@ -164,6 +168,7 @@ class GlobalSearchActivity : AppCompatActivity() {
 
         input.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                searchDebounceJob?.cancel()
                 runSearch(input.text.toString().trim())
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                     .hideSoftInputFromWindow(input.windowToken, 0)
@@ -176,6 +181,18 @@ class GlobalSearchActivity : AppCompatActivity() {
             input.setText(initial)
             runSearch(initial)
         }
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val query = s?.toString()?.trim().orEmpty()
+                searchDebounceJob?.cancel()
+                searchDebounceJob = lifecycleScope.launch {
+                    delay(350)
+                    runSearch(query)
+                }
+            }
+        })
     }
 
     // ---------------------------------------------------------------- rendering
@@ -229,8 +246,12 @@ class GlobalSearchActivity : AppCompatActivity() {
                 .thenByDescending { it.members.size }
                 .thenByDescending { it.stats?.latestDate ?: 0L }
         )
-        val close = sorted.filter { relevance(it) <= 2 }
-        return (if (close.isNotEmpty()) close else sorted).take(30)
+        val close = sorted.filter { group ->
+            relevance(group) <= 2 || group.members.any {
+                it.manga.genre?.contains(currentQuery, ignoreCase = true) == true
+            }
+        }
+        return (if (currentQuery.isBlank()) sorted else close).take(30)
     }
 
     private fun toRow(g: TitleGroup): RowItem {
@@ -344,11 +365,14 @@ class GlobalSearchActivity : AppCompatActivity() {
     private suspend fun searchAll(q: String, combine: Boolean) {
         coroutineScope {
             val initial = mutableListOf<SourceResult>()
-            val libraryMatches = (if (q.isBlank()) {
+            val libraryMatches = if (q.isBlank()) {
                 app.db.mangaDao().getFavoritesList()
             } else {
-                app.db.mangaDao().searchLibrary("%$q%")
-            }).filter(::matchesFilters)
+                val titleMatches = app.db.mangaDao().searchLibrary("%$q%")
+                val genreMatches = app.db.mangaDao().getFavoritesList()
+                    .filter { it.genre?.contains(q, ignoreCase = true) == true }
+                (titleMatches + genreMatches).distinctBy { it.id }
+            }.filter(::matchesFilters)
             if (libraryMatches.isNotEmpty()) {
                 initial += SourceResult(
                     sourceId = "library", sourceName = "In your library", loading = false, kind = KIND_LIBRARY,
@@ -372,9 +396,29 @@ class GlobalSearchActivity : AppCompatActivity() {
                 sources.map { s ->
                     async {
                         val found: List<SManga> = try {
-                            val candidates = searchSem.withPermit {
-                                (if (q.isBlank()) s.getPopular(1) else s.search(q, 1)).mangas.take(15)
+                            val titles = withTimeout(12_000L) {
+                                searchSem.withPermit {
+                                    (if (q.isBlank()) s.getPopular(1) else s.search(q, 1)).mangas
+                                }
                             }
+                            var genreError: String? = null
+                            val genres = if (q.length >= 2) {
+                                try {
+                                    withTimeout(8_000L) {
+                                        searchSem.withPermit { s.searchByGenre(q, 1).mangas }
+                                    }
+                                } catch (e: TimeoutCancellationException) {
+                                    genreError = "Genre search timed out"
+                                    emptyList()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    genreError = "Genre search failed: ${e.message ?: "source error"}"
+                                    emptyList()
+                                }
+                            } else emptyList()
+                            val candidates = (titles + genres).distinctBy { it.url }.take(20)
+                            genreError?.let { message -> update(s.id) { it.copy(error = message) } }
                             if (!hasSearchFilters()) {
                                 candidates
                             } else {
@@ -397,6 +441,9 @@ class GlobalSearchActivity : AppCompatActivity() {
                                 }
                                 matched
                             }
+                        } catch (e: TimeoutCancellationException) {
+                            update(s.id) { it.copy(loading = false, error = "Search timed out") }
+                            return@async
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -446,16 +493,34 @@ class GlobalSearchActivity : AppCompatActivity() {
             sources.forEach { source ->
                 launch {
                     val result = try {
-                        val candidates = withTimeout(12_000L) {
+                        val titles = withTimeout(8_000L) {
                             sem.withPermit {
-                                (if (q.isBlank()) source.popular(1) else source.search(q, 1)).take(10)
+                                if (q.isBlank()) source.popular(1) else source.search(q, 1)
                             }
                         }
+                        var genreError: String? = null
+                        val genres = if (q.length >= 2) {
+                            try {
+                                withTimeout(4_000L) {
+                                    sem.withPermit { source.searchByGenre(q, 1) }
+                                }
+                            } catch (e: TimeoutCancellationException) {
+                                genreError = "Genre search timed out"
+                                emptyList()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                genreError = e.message ?: "Genre search failed"
+                                emptyList()
+                            }
+                        } else emptyList()
+                        val candidateItems = (titles + genres).distinctBy { it.key }.take(15)
+                        val sourceName = source.name
                         if (!hasSearchFilters()) {
-                            candidates to null
+                            candidateItems to genreError?.let { "$sourceName genre search: $it" }
                         } else {
                             var failures = 0
-                            val books = candidates.mapNotNull { item ->
+                            val books = candidateItems.mapNotNull { item ->
                                 try {
                                     val detailed = withTimeout(12_000L) {
                                         sem.withPermit { source.details(item) }
@@ -468,9 +533,13 @@ class GlobalSearchActivity : AppCompatActivity() {
                                     null
                                 }
                             }
-                            books to if (failures > 0) {
+                            val metadataError = if (failures > 0) {
                                 "${source.name}: $failures result(s) could not be checked against metadata filters"
                             } else null
+                            books to listOfNotNull(
+                                genreError?.let { "$sourceName genre search: $it" },
+                                metadataError
+                            ).joinToString("\n").ifBlank { null }
                         }
                     } catch (e: TimeoutCancellationException) {
                         emptyList<BookItem>() to "${source.name}: timed out"

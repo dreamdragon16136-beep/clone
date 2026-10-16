@@ -13,6 +13,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.appbar.MaterialToolbar
 import com.imperialreader.R
 import com.imperialreader.data.cover.AutomaticCoverRefreshScheduler
+import com.imperialreader.data.update.LibraryUpdateScheduler
 import com.imperialreader.util.toast
 
 class SettingsActivity : AppCompatActivity() {
@@ -50,6 +51,23 @@ class SettingsActivity : AppCompatActivity() {
 
             findPreference<SwitchPreferenceCompat>("automatic_cover_refresh")?.setOnPreferenceChangeListener { _, newValue ->
                 AutomaticCoverRefreshScheduler.onSettingChanged(ctx, enabled = newValue == true)
+                true
+            }
+            val libraryUpdateFrequency = findPreference<ListPreference>("library_update_frequency")
+            libraryUpdateFrequency?.isEnabled = findPreference<SwitchPreferenceCompat>("refresh_on_start")?.isChecked == true
+            findPreference<SwitchPreferenceCompat>("refresh_on_start")?.setOnPreferenceChangeListener { _, newValue ->
+                libraryUpdateFrequency?.isEnabled = newValue == true
+                LibraryUpdateScheduler.onSettingChanged(
+                    ctx,
+                    enabled = newValue == true,
+                    intervalMinutes = libraryUpdateFrequency?.value?.toLongOrNull() ?: 0L
+                )
+                true
+            }
+            libraryUpdateFrequency?.setOnPreferenceChangeListener { _, newValue ->
+                val enabled = findPreference<SwitchPreferenceCompat>("refresh_on_start")?.isChecked == true
+                val interval = (newValue as? String)?.toLongOrNull() ?: 0L
+                LibraryUpdateScheduler.onSettingChanged(ctx, enabled, interval)
                 true
             }
             findPreference<ListPreference>("automatic_cover_refresh_interval")?.setOnPreferenceChangeListener { _, newValue ->

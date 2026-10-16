@@ -4,4 +4,6 @@
     <item android:id="@+id/action_search" android:icon="@drawable/ic_search" android:title="Search"
         app:showAsAction="always|collapseActionView"
         app:actionViewClass="androidx.appcompat.widget.SearchView"/>
+    <item android:id="@+id/action_webview" android:icon="@drawable/ic_public" android:title="Open in WebView"
+        app:showAsAction="never"/>
 </menu>

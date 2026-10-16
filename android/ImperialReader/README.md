@@ -7,18 +7,18 @@ Black-and-gold "Imperial" theme, Mihon layout: **Library · Updates · History �
 
 | Area | What you get |
 |---|---|
-| Library | Cover grid, unread / downloaded / Local badges, search, filters, sort, pull-to-refresh library update, automatic cover refresh on app start with a configurable frequency, bulk mark-as-read and optional download deletion on removal, 2–5 columns |
-| Auto global search | Searching the library with no match + pressing search opens **Global search** (library first, then all sources in parallel, ranked by chapter count then latest upload) |
+| Library | Cover grid, unread / downloaded / Local badges, search, filters, sort, pull-to-refresh library update, automatic library update toggle with startup or periodic frequencies, automatic cover refresh, bulk mark-as-read and optional download deletion on removal, 2–5 columns |
+| Auto global search | Searching the library with no match + pressing search opens **Global search** (library first, then sources with bounded concurrent search, title/genre matching, and relevance ranking) |
 | Updates / History | New-chapter feed, read-history with resume, clear/remove |
-| Browse | **Sources** (Popular / Latest / Search, infinite scroll, add any site by URL) and **Extensions** = Local library manager plus EPUB / web-novel catalogs (Project Gutenberg, Internet Archive, Royal Road, NovelArrow, and dozens of QuickNovel-style novel sites) |
-| Built-in sources | MangaDex (official API) + a list of Madara-theme sites (see "Sources" below) |
+| Browse | **Sources** (Popular / Latest / title and genre search, infinite scroll, add any site by URL) and **Extensions** = Local library manager plus EPUB / web-novel catalogs (Project Gutenberg, Internet Archive, Royal Road, Tapas, NovelArrow, LunarX, Ranobes, and more) |
+| Built-in sources | MangaDex (official API), Tapas Comics, imhentai.xxx (18+), and a list of Madara-theme sites (see "Sources" below) |
 | Details | Cover/info header, add to library, chapter list with read / bookmark / download state, Start / Resume / Read again |
 | Reader | Left-to-right, right-to-left, vertical webtoon, tap zones, seek bar, prev/next chapter, volume keys, progress + history saving, fullscreen, keep-screen-on |
 | Local library | Import a manga folder from **Browse → Extensions → Local**, or use **More → Scan local library**. Reads image folders, CBZ, ZIP, CBR/RAR, PDF, and EPUB chapters. Refresh detects added, renamed, and removed chapter files in the configured `local/` folder. |
-| EPUB / web novels | Light-novel reading controls, section seek/progress, contents list, font size, dark/sepia/light themes, and text-to-speech |
-| PDF | Local PDFs open in a paged reader with page seeking, previous/next controls, and persisted page progress |
+| EPUB / web novels | Light-novel reading controls, left-to-right page mode, section seek/progress, contents list, font size, dark/sepia/light themes, and text-to-speech |
+| PDF | Local PDFs open in a paged reader with light/dark mode, page seeking, previous/next controls, and persisted page progress |
 | Downloads | Foreground-service queue, 3 parallel pages, stored in `downloads/<Source (LANG)>/<Manga>/<Chapter>/001.jpg` |
-| Cloudflare | In-app WebView shares cookies with the HTTP client: solve the challenge once, then retry |
+| Cloudflare | In-app WebView shares cookies with the HTTP client: open a catalog/source in the browser, solve the challenge, then retry |
 
 ## Build it on GitHub (no PC tooling needed)
 
@@ -92,10 +92,10 @@ Scanlation domains change or die constantly and several sit behind Cloudflare, s
 ## Newer features
 
 * **Combined titles:** Global search groups the same title from every source into ONE row with all chapters merged (most up-to-date count, newest first). Reading picks the first source that has the chapter and falls back to the next automatically. Untick "Combine…" for per-source rows; "Show only sources with results" hides empty sources.
-* **EPUBs and novels in search:** Global search searches EPUB catalogs and web-novel sources, including NovelArrow, and preserves matching titles from separate catalogs. The optional filter menu can search by genre/tag and artist.
-* **Web novels (QuickNovel-style):** Browse → Extensions lists the novel catalogs, including NovelPing and NovelArrow. Tap a novel → *Download as EPUB* (first 25 / 100 / 300 / all chapters) builds a real EPUB in `local/`. Newly published chapters are included in library refreshes and appear in Updates after the initial chapter sync. Re-downloading replaces the file instead of duplicating.
-* **EPUB reader:** section seek/progress, contents list, font size, dark / sepia / light themes, **read-aloud (text-to-speech)** that continues into the next section.
-* **Library:** categories (tabs, create / rename / delete, assign when adding and later via long-press), filters (unread, downloaded, bookmarked), sorts incl. *Recently updated*, long-press → mark whole entry read / unread, badge toggles, optional update on start.
+* **EPUBs and novels in search:** Global search searches EPUB catalogs and web-novel sources, including NovelArrow, LunarX, and Ranobes. Genre terms are searched alongside titles; per-source requests are bounded so a slow source cannot hold the entire search indefinitely.
+* **Web novels (QuickNovel-style):** Browse → Extensions lists the novel catalogs, including NovelPing, NovelArrow, LunarX, Ranobes, and Tapas Novels. Tap a novel → *Download as EPUB* builds a real EPUB in `local/`. Newly published chapters are included in library refreshes and appear in Updates after the initial chapter sync.
+* **EPUB reader:** section seek/progress, contents list, font size, left-to-right paged reading, dark / sepia / light themes, **read-aloud (text-to-speech)** that continues into the next section.
+* **Library:** categories, filters, sorts, mark whole entry read / unread, badge toggles, and automatic updates that can run at app start or every 30 minutes, hour, 12 hours, 24 hours, or 7 days.
 * **Backup and restore:** More → Backup and restore saves/loads a JSON file (library, categories, read progress, bookmarks, history, app preferences, custom sources added by URL, and reader preferences including per-title modes and EPUB theme). Automatic backups include the same data. Restore merges library data without losing read state and restores backed settings. Device-specific storage access and automatic-backup status are not transferred.
 * **Local library:** CBZ/ZIP, **CBR/RAR (RAR 2–4)**, PDF, EPUB and image folders. Covers are extracted (cover.jpg → first page → PDF/EPUB cover) and refresh automatically when the files change; switch off in Settings → Local library.
 * **Duplicates:** same entry through another URL form = one row (newer data overwrites). Adding a title you already have from another source asks first. Adding the same site twice replaces the older custom entry.
@@ -118,7 +118,7 @@ They exist as Mihon extensions in the Extensions tab, but this app cannot run ex
 * **Mihon/Keiyoushi APK extensions are not supported.** The Extensions tab now lists EPUB / web-novel catalogs instead. Imperial Reader does not execute Tachiyomi extension code.
 * **RAR5** archives (newer WinRAR default) can't be read; the app tells you to re-save as CBZ. RAR 2–4 works.
 * **ManhwaRead**, **Manga18.club**, **DemonicScans**, and **MangaFire** may require a Cloudflare check. If a request is blocked, open the source site in the in-app browser and complete its challenge before retrying.
-* **Novel site addresses** in `BookSources.kt` are from memory and several are guesses (Bright Novel, Chikari, Luxon Scan, Novel Phoenix, Ranovel, ScrollersPub). Wattpad and Scribblehub need their own APIs/requests, so the generic reader may fail there. Anna's Archive was left out: it is an index of pirated downloads, not a readable source.
+* **Novel site addresses** in `BookSources.kt` are from memory and several use the generic HTML scraper. Sites with custom layouts or anti-bot challenges may require opening them in WebView; the app reports unavailable or unreadable content instead of fabricating chapters. Anna's Archive was left out: it is an index of pirated downloads, not a readable source.
 * No pinch-zoom in the paged reader yet (fit-to-screen only).
 * Download queue is in memory: if Android kills the app mid-queue, re-queue the remaining chapters.
 * Source scrapers cannot be unit-tested offline; the first run on a real device is the real test.

@@ -54,9 +54,17 @@
             app:iconSpaceReserved="false"/>
         <SwitchPreferenceCompat
             android:key="refresh_on_start"
-            android:title="Update library on app start"
-            android:summary="Checks every entry for new chapters when the app opens"
+            android:title="Automatic library updates"
+            android:summary="Automatically checks for new chapters at the selected frequency"
             android:defaultValue="false"
+            app:iconSpaceReserved="false"/>
+        <ListPreference
+            android:key="library_update_frequency"
+            android:title="Library update frequency"
+            android:entries="@array/library_update_interval_names"
+            android:entryValues="@array/library_update_interval_values"
+            android:defaultValue="0"
+            app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false"/>
     </PreferenceCategory>
 

@@ -3,6 +3,10 @@ package com.imperialreader.data.source
 import com.imperialreader.data.network.CloudflareException
 import com.imperialreader.util.parseChapterNumber
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.withPermit
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -27,6 +31,7 @@ class GenericSource(
     @Volatile private var listPattern: String? = null
     @Volatile private var latestPattern: String? = null
     @Volatile private var searchPattern: String? = null
+    @Volatile private var genrePattern: String? = null
 
     private val novelList = listOf(
         "/popular?page={p}", "/most-popular?page={p}", "/novel-list?page={p}", "/novels?page={p}", "/novel?page={p}",
@@ -120,10 +125,11 @@ class GenericSource(
             val path = runCatching { URI(href).path }.getOrNull().orEmpty().trim('/')
             if (path.isBlank() || path.count { it == '/' } > 2 || badPath.containsMatchIn(path)) return@mapNotNull null
             if (a.parents().any { it.tagName() in setOf("nav", "header", "footer") }) return@mapNotNull null
-            val img = a.selectFirst("img") ?: return@mapNotNull null
-            val title = listOf(a.attr("title"), img.attr("alt"), a.text(), a.parent()?.selectFirst("h1,h2,h3,h4,.title")?.text().orEmpty())
+            val img = a.selectFirst("img")
+            if (img == null && !novel) return@mapNotNull null
+            val title = listOf(a.attr("title"), img?.attr("alt").orEmpty(), a.text(), a.parent()?.selectFirst("h1,h2,h3,h4,.title")?.text().orEmpty())
                 .map { it.trim() }.firstOrNull { it.length >= 2 } ?: return@mapNotNull null
-            Card(path.substringBefore('/'), SManga(url = href, title = title.take(150), thumbnailUrl = lazyImage(img)))
+            Card(path.substringBefore('/'), SManga(url = href, title = title.take(150), thumbnailUrl = img?.let(::lazyImage)))
         }
         val dominant = all.groupBy { it.segment }.maxByOrNull { it.value.size }?.key ?: return emptyList()
         return all.filter { it.segment == dominant }.map { it.manga }.distinctBy { it.url }
@@ -185,6 +191,66 @@ class GenericSource(
         }
         if (successfulResponse) return MangasPage(emptyList(), false)
         throw last ?: IOException("Search failed on this site")
+    }
+
+    override suspend fun searchByGenre(query: String, page: Int): MangasPage {
+        val slug = query.trim().lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-')
+        if (slug.isBlank()) return MangasPage(emptyList(), false)
+
+        val known = genrePattern
+        if (known != null) {
+            val result = genreCards(query, slug, page, known)
+            if (result.mangas.isNotEmpty() || page > 1) return result
+            genrePattern = null
+        }
+
+        val candidates = listOf(
+            "/genre/{g}/page/{p}", "/genres/{g}/page/{p}",
+            "/tag/{g}/page/{p}", "/tags/{g}/page/{p}",
+            "/genre/{g}?page={p}", "/tag/{g}?page={p}"
+        )
+        for (pattern in candidates) {
+            try {
+                val result = genreCards(query, slug, 1, pattern)
+                if (result.mangas.isNotEmpty()) {
+                    genrePattern = pattern
+                    return if (page == 1) result else genreCards(query, slug, page, pattern)
+                }
+            } catch (e: CloudflareException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: HttpStatusException) {
+                if (e.code != 404) throw e
+            }
+        }
+        return super.searchByGenre(query, page)
+    }
+
+    private suspend fun genreCards(query: String, slug: String, page: Int, pattern: String): MangasPage {
+        val url = baseUrl.trimEnd('/') + pattern
+            .replace("{g}", enc(slug))
+            .replace("{p}", page.toString())
+        val candidates = parseCards(doc(url))
+        val limiter = kotlinx.coroutines.sync.Semaphore(4)
+        val matches = coroutineScope {
+            candidates.map { candidate ->
+                async {
+                    try {
+                        limiter.withPermit {
+                            getMangaDetails(candidate).takeIf {
+                                normalizeTitle(it.genre.orEmpty()).contains(normalizeTitle(query))
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+        return MangasPage(matches, pattern.contains("{p}") && matches.isNotEmpty())
     }
 
     // ------------------------------------------------------------------ details & chapters

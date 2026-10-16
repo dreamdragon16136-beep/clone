@@ -48,7 +48,10 @@ abstract class HttpSource : Source {
                 if (!resp.isSuccessful) {
                     val cf = resp.header("Server")?.contains("cloudflare", true) == true ||
                         resp.header("cf-ray") != null
-                    if (cfChallenge || (cf && (resp.code == 403 || resp.code == 503))) {
+                    val browserCheck = resp.code == 503 &&
+                        (text.contains("browser_check", ignoreCase = true) ||
+                            text.contains("document.cookie", ignoreCase = true))
+                    if (cfChallenge || (cf && (resp.code == 403 || resp.code == 503)) || browserCheck) {
                         throw CloudflareException(request.url.toString())
                     }
                     throw HttpStatusException(resp.code, request.url.toString())

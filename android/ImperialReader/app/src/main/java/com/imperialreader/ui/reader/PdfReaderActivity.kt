@@ -3,6 +3,11 @@ package com.imperialreader.ui.reader
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
@@ -48,6 +53,7 @@ class PdfReaderActivity : AppCompatActivity() {
     private var pageIndex = 0
     private var renderJob: Job? = null
     private var updatingSeek = false
+    private var darkMode = false
     private val renderMutex = Mutex()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,9 +63,21 @@ class PdfReaderActivity : AppCompatActivity() {
         pageLabel = findViewById(R.id.pageLabel)
         pageSeek = findViewById(R.id.pageSeek)
         chapterId = intent.getLongExtra(EXTRA_CHAPTER, -1L)
+        darkMode = app.prefs.sp.getBoolean("pdf_dark_mode", false)
 
-        findViewById<MaterialToolbar>(R.id.toolbar).setNavigationOnClickListener { finish() }
-        findViewById<MaterialToolbar>(R.id.toolbar).title = "PDF reader"
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
+        toolbar.setNavigationOnClickListener { finish() }
+        toolbar.title = "PDF reader"
+        toolbar.inflateMenu(R.menu.pdf_reader_menu)
+        toolbar.setOnMenuItemClickListener { item ->
+            if (item.itemId != R.id.action_pdf_theme) return@setOnMenuItemClickListener false
+            darkMode = !darkMode
+            app.prefs.sp.edit().putBoolean("pdf_dark_mode", darkMode).apply()
+            applyReaderTheme(toolbar)
+            renderer?.let { showPage(pageIndex) }
+            true
+        }
+        applyReaderTheme(toolbar)
         findViewById<View>(R.id.btnPrevious).setOnClickListener { showPage(pageIndex - 1) }
         findViewById<View>(R.id.btnNext).setOnClickListener { showPage(pageIndex + 1) }
         pageSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -95,6 +113,7 @@ class PdfReaderActivity : AppCompatActivity() {
                     throw IOException("PDF contains no pages")
                 }
                 renderer = opened
+                applyReaderTheme(toolbar)
                 pageSeek.max = opened.pageCount - 1
                 val startPage = if (chapter.read) 0 else chapter.lastPageRead
                 showPage(startPage.coerceIn(0, opened.pageCount - 1))
@@ -124,7 +143,7 @@ class PdfReaderActivity : AppCompatActivity() {
                 val bitmap = withContext(Dispatchers.IO) {
                     renderMutex.withLock { render(pdf, target, targetWidth, targetHeight) }
                 }
-                pageImage.setImageBitmap(bitmap)
+                pageImage.setImageBitmap(if (darkMode) invert(bitmap) else bitmap)
                 val chapter = app.db.chapterDao().getById(chapterId)
                     ?: throw IOException("Chapter no longer exists")
                 app.db.chapterDao().saveProgress(chapterId, target, chapter.read || target == pdf.pageCount - 1)
@@ -139,6 +158,42 @@ class PdfReaderActivity : AppCompatActivity() {
     private fun updatePageLabel(page: Int) {
         val pageCount = renderer?.pageCount ?: 0
         pageLabel.text = "Page ${page + 1} / $pageCount"
+    }
+
+    private fun applyReaderTheme(toolbar: MaterialToolbar) {
+        val background = if (darkMode) Color.BLACK else Color.WHITE
+        val foreground = if (darkMode) Color.WHITE else Color.BLACK
+        findViewById<View>(R.id.pdfReaderRoot).setBackgroundColor(background)
+        toolbar.setBackgroundColor(background)
+        toolbar.setTitleTextColor(foreground)
+        toolbar.menu.findItem(R.id.action_pdf_theme)?.title = if (darkMode) "Light" else "Dark"
+        pageImage.setBackgroundColor(background)
+        pageLabel.setTextColor(foreground)
+        findViewById<View>(R.id.pdfControls).setBackgroundColor(if (darkMode) Color.rgb(24, 24, 24) else Color.rgb(240, 240, 240))
+        findViewById<com.google.android.material.button.MaterialButton>(R.id.btnPrevious).apply {
+            setBackgroundTintList(android.content.res.ColorStateList.valueOf(background))
+            setTextColor(foreground)
+        }
+        findViewById<com.google.android.material.button.MaterialButton>(R.id.btnNext).apply {
+            setBackgroundTintList(android.content.res.ColorStateList.valueOf(background))
+            setTextColor(foreground)
+        }
+        window.statusBarColor = background
+        window.navigationBarColor = background
+        window.decorView.systemUiVisibility = if (darkMode) 0 else
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+    }
+
+    private fun invert(source: Bitmap): Bitmap {
+        val result = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        val matrix = ColorMatrix(floatArrayOf(
+            -1f, 0f, 0f, 0f, 255f,
+            0f, -1f, 0f, 0f, 255f,
+            0f, 0f, -1f, 0f, 255f,
+            0f, 0f, 0f, 1f, 0f
+        ))
+        Canvas(result).drawBitmap(source, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(matrix) })
+        return result
     }
 
     private fun render(pdf: PdfRenderer, index: Int, maxWidth: Int, maxHeight: Int): Bitmap {

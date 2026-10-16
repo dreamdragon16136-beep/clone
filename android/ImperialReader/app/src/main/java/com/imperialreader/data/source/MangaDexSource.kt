@@ -36,6 +36,22 @@ class MangaDexSource : HttpSource() {
         list("$api/manga?limit=$pageSize&offset=${(page - 1) * pageSize}&includes[]=cover_art" +
             "&title=${enc(query)}&order[relevance]=desc&availableTranslatedLanguage[]=en$rating")
 
+    override suspend fun searchByGenre(query: String, page: Int): MangasPage {
+        val tags = JSONObject(getString("$api/manga/tag")).optJSONArray("data") ?: JSONArray()
+        val matches = (0 until tags.length()).mapNotNull { index ->
+            val tag = tags.optJSONObject(index) ?: return@mapNotNull null
+            val name = tag.optJSONObject("attributes")?.optJSONObject("name")?.optString("en").orEmpty()
+            if (name.contains(query, ignoreCase = true)) tag.optString("id") to name else null
+        }
+        val tag = matches.minByOrNull { (_, name) ->
+            if (name.equals(query.trim(), ignoreCase = true)) 0 else name.length
+        } ?: return MangasPage(emptyList(), false)
+        val url = "$api/manga?limit=$pageSize&offset=${(page - 1) * pageSize}" +
+            "&includes[]=cover_art&includedTags[]=${tag.first}" +
+            "&order[followedCount]=desc&hasAvailableChapters=true&availableTranslatedLanguage[]=en$rating"
+        return list(url)
+    }
+
     private suspend fun list(url: String): MangasPage {
         val json = JSONObject(getString(url))
         val data = json.optJSONArray("data") ?: JSONArray()
@@ -78,10 +94,16 @@ class MangaDexSource : HttpSource() {
         val id = obj.getString("id")
         val attrs = obj.getJSONObject("attributes")
         val file = relationship(obj, "cover_art")?.optJSONObject("attributes")?.optString("fileName").orEmpty()
+        val tags = attrs.optJSONArray("tags")
+        val genres = if (tags == null) emptyList() else (0 until tags.length()).mapNotNull { index ->
+            tags.optJSONObject(index)?.optJSONObject("attributes")?.optJSONObject("name")
+                ?.optString("en")?.ifBlank { null }
+        }
         return SManga(
             url = "/manga/$id",
             title = title(attrs),
-            thumbnailUrl = if (file.isNotBlank()) "$covers/$id/$file.256.jpg" else null
+            thumbnailUrl = if (file.isNotBlank()) "$covers/$id/$file.256.jpg" else null,
+            genre = genres.joinToString(", ").ifBlank { null }
         )
     }
 

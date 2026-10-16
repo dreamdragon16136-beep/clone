@@ -95,6 +95,12 @@ class AppPrefs(context: Context) {
     val showUnreadBadge: Boolean get() = sp.getBoolean("badge_unread", true)
     val showDownloadBadge: Boolean get() = sp.getBoolean("badge_download", true)
     val refreshOnStart: Boolean get() = sp.getBoolean("refresh_on_start", false)
+    val libraryUpdateIntervalMinutes: Long
+        get() = sp.getString("library_update_frequency", "0")?.toLongOrNull()
+            ?.takeIf { it in setOf(0L, 30L, 60L, 720L, 1440L, 10080L) } ?: 0L
+    var libraryUpdatedAt: Long
+        get() = sp.getLong("library_updated_at", 0L)
+        set(value) = sp.edit { putLong("library_updated_at", value) }
     val automaticCoverRefresh: Boolean get() = sp.getBoolean("automatic_cover_refresh", false)
     val automaticCoverRefreshIntervalMinutes: Long
         get() = sp.getString("automatic_cover_refresh_interval", "1440")?.toLongOrNull()

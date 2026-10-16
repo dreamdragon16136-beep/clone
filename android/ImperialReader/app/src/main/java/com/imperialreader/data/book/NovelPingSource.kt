@@ -14,9 +14,14 @@ import java.io.IOException
 import java.net.URLEncoder
 
 /** NovelPing's catalog and chapter archive use site-specific AJAX endpoints and markup. */
-class NovelPingSource : BookSource {
-    override val id = ID
-    override val name = "NovelPing"
+class NovelPingSource(
+    catalogId: String = ID,
+    displayName: String = "NovelPing",
+    siteUrl: String = BASE
+) : BookSource {
+    override val id = catalogId
+    override val name = displayName
+    override val webUrl = siteUrl
     override val description = "Web novel • NovelPing catalog"
     override val isWebNovel = true
 

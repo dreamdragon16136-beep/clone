@@ -18,6 +18,8 @@ class SourceManager(private val context: Context) {
         HentaiDbSource(),
         NhentaiXxxSource(),
         NineHentaiSource(),
+        ImhentaiXxxSource(),
+        TapasSource(),
         ComicHubFreeSource(),
         ReadComicsOnlineSource(),
         // Confirmed against the live site: WordPress + MangaThemesia (/manga/?order=update, chapters at /<slug>-chapter-N/)

@@ -1,5 +1,12 @@
 package com.imperialreader.data.source
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+
 data class SManga(
     var url: String,
     var title: String,
@@ -39,6 +46,28 @@ interface Source {
     suspend fun getLatest(page: Int): MangasPage
     suspend fun search(query: String, page: Int): MangasPage
     suspend fun getMangaDetails(manga: SManga): SManga
+    suspend fun searchByGenre(query: String, page: Int): MangasPage {
+        val popular = getPopular(page)
+        val matches = coroutineScope {
+            val limiter = Semaphore(4)
+            popular.mangas.map { candidate ->
+                async {
+                    try {
+                        limiter.withPermit {
+                            getMangaDetails(candidate).takeIf {
+                                normalizeTitle(it.genre.orEmpty()).contains(normalizeTitle(query))
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+        return MangasPage(matches, popular.hasNextPage)
+    }
     suspend fun getChapters(manga: SManga): List<SChapter>
     suspend fun getPages(chapter: SChapter): List<String>
 
