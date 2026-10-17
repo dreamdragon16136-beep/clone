@@ -15,8 +15,9 @@ import android.view.View
 import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.appbar.MaterialToolbar
 import com.imperialreader.R
 import com.imperialreader.util.app
@@ -33,7 +34,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import kotlin.math.min
 
-class PdfReaderActivity : AppCompatActivity() {
+class PdfReaderActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_CHAPTER = "chapter_id"
@@ -55,11 +56,33 @@ class PdfReaderActivity : AppCompatActivity() {
     private var updatingSeek = false
     private var darkMode = false
     private val renderMutex = Mutex()
+    private var pendingSaveBitmap: Bitmap? = null
+    private val requestGalleryPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val bitmap = pendingSaveBitmap
+            pendingSaveBitmap = null
+            if (granted && bitmap != null) savePageBitmap(bitmap)
+            else if (!granted) {
+                bitmap?.recycle()
+                toast("Storage permission is needed to save pages")
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_pdf_reader)
         pageImage = findViewById(R.id.pdfPage)
+        pageImage.setOnLongClickListener {
+            if (pageImage.drawable == null) {
+                toast("Wait for the page to finish rendering before saving it")
+            } else {
+                GalleryPageSaver.captureDisplayedPage(this, pageImage) { bitmap ->
+                    if (bitmap == null) toast("Could not capture the displayed page")
+                    else confirmSavePage(bitmap)
+                }
+            }
+            true
+        }
         pageLabel = findViewById(R.id.pageLabel)
         pageSeek = findViewById(R.id.pageSeek)
         chapterId = intent.getLongExtra(EXTRA_CHAPTER, -1L)
@@ -77,6 +100,7 @@ class PdfReaderActivity : AppCompatActivity() {
             renderer?.let { showPage(pageIndex) }
             true
         }
+
         applyReaderTheme(toolbar)
         findViewById<View>(R.id.btnPrevious).setOnClickListener { showPage(pageIndex - 1) }
         findViewById<View>(R.id.btnNext).setOnClickListener { showPage(pageIndex + 1) }
@@ -125,6 +149,38 @@ class PdfReaderActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    private fun savePageBitmap(bitmap: Bitmap) {
+        lifecycleScope.launch {
+            try {
+                GalleryPageSaver.save(this@PdfReaderActivity, bitmap)
+                toast("Page saved to Pictures/ImperialReader")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast("Couldn't save page: ${e.message}")
+            } finally {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    private fun confirmSavePage(bitmap: Bitmap) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Save page to gallery?")
+            .setMessage("Save this page to Pictures/ImperialReader?")
+            .setNegativeButton("Cancel") { _, _ -> bitmap.recycle() }
+            .setOnCancelListener { bitmap.recycle() }
+            .setPositiveButton("Save") { _, _ ->
+                if (GalleryPageSaver.hasLegacyPermission(this)) savePageBitmap(bitmap)
+                else {
+                    pendingSaveBitmap?.recycle()
+                    pendingSaveBitmap = bitmap
+                    requestGalleryPermission.launch(GalleryPageSaver.WRITE_PERMISSION)
+                }
+            }
+            .show()
     }
 
     private fun showPage(target: Int) {
@@ -205,6 +261,7 @@ class PdfReaderActivity : AppCompatActivity() {
                 (page.height * scale).toInt().coerceAtLeast(1),
                 Bitmap.Config.ARGB_8888
             )
+            bitmap.eraseColor(Color.WHITE)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             return bitmap
         } finally {

@@ -4,7 +4,6 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -12,7 +11,7 @@ import com.google.android.material.button.MaterialButton
 import com.imperialreader.R
 import com.imperialreader.util.app
 
-class AppLockActivity : AppCompatActivity() {
+class AppLockActivity : androidx.appcompat.app.AppCompatActivity() {
     private lateinit var status: TextView
     private var authenticating = false
 

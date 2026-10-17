@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SearchView
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
@@ -31,7 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
 /** Popular + searchable grid for one EPUB / web-novel catalog. Tap a book to download it into the library. */
-class BookBrowseActivity : AppCompatActivity() {
+class BookBrowseActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_SOURCE = "source_id"

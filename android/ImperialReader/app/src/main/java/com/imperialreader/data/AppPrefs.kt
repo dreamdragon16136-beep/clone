@@ -10,6 +10,11 @@ class AppPrefs(context: Context) {
     val sp: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
 
     init {
+        sp.edit()
+            .remove("app_theme")
+            .remove("pixel_style")
+            .remove("ui_accent")
+            .apply()
         val migratedInterval = when (sp.getString("automatic_cover_refresh_interval", null)) {
             "6" -> "360"
             "12" -> "720"

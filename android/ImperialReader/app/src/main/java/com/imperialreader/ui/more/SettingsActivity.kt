@@ -3,7 +3,6 @@ package com.imperialreader.ui.more
 import android.app.KeyguardManager
 import android.os.Bundle
 import android.webkit.CookieManager
-import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
@@ -16,7 +15,7 @@ import com.imperialreader.data.cover.AutomaticCoverRefreshScheduler
 import com.imperialreader.data.update.LibraryUpdateScheduler
 import com.imperialreader.util.toast
 
-class SettingsActivity : AppCompatActivity() {
+class SettingsActivity : androidx.appcompat.app.AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)

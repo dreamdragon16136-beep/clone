@@ -78,8 +78,12 @@ class MangaFireSource : HttpSource() {
                     ) ?: return@mapNotNull null
                     parseManga(link, card.selectFirst("img"))
                 }.ifEmpty {
-                    doc.select("a[href*=/manga/]").mapNotNull { link ->
-                        parseManga(link, link.selectFirst("img") ?: link.parent()?.selectFirst("img"))
+                    doc.select("a[href]").mapNotNull { link ->
+                        val href = link.absUrl("href")
+                        if (!href.contains("/manga/")) return@mapNotNull null
+                        val image = link.selectFirst("img") ?: link.parents().take(3)
+                            .mapNotNull { it.selectFirst("img") }.firstOrNull()
+                        parseManga(link, image)
                     }
                 }.distinctBy { it.url }
                 if (mangas.isNotEmpty()) {
@@ -95,14 +99,22 @@ class MangaFireSource : HttpSource() {
             }
         }
         if (successfulResponse && page > 1) return MangasPage(emptyList(), false)
-        throw lastError ?: IOException("MangaFire returned no readable titles")
+        throw lastError ?: IOException(
+            if (successfulResponse) "MangaFire loaded a page but it contained no recognizable manga cards"
+            else "MangaFire returned no readable titles"
+        )
     }
 
     private fun parseManga(link: Element, image: Element?): SManga? {
         val url = link.absUrl("href").ifBlank { absoluteUrl(link.attr("href")) }
         if (url.isBlank() || !url.contains("/manga/")) return null
-        val title = link.ownText().trim().ifBlank { link.text().trim() }
-            .ifBlank { image?.attr("alt")?.trim().orEmpty() }
+        val title = sequenceOf(
+            link.attr("title"),
+            link.attr("data-title"),
+            link.ownText(),
+            link.text(),
+            image?.attr("alt").orEmpty()
+        ).map(String::trim).firstOrNull { it.isNotBlank() }.orEmpty()
         if (title.isBlank()) return null
         return SManga(url = url, title = title, thumbnailUrl = lazyImage(image))
     }

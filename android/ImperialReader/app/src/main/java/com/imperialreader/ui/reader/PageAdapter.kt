@@ -21,7 +21,8 @@ import com.imperialreader.util.dp
  */
 class PageAdapter(
     private val headers: Map<String, String>,
-    private val webtoon: Boolean
+    private val webtoon: Boolean,
+    private val onSavePage: (ImageView, String) -> Unit
 ) : RecyclerView.Adapter<PageAdapter.VH>() {
 
     var pages: List<String> = emptyList()
@@ -76,6 +77,10 @@ class PageAdapter(
 
     private fun load(h: VH, position: Int) {
         val url = pages[position]
+        h.image.setOnLongClickListener {
+            onSavePage(h.image, url)
+            true
+        }
         h.error.visibility = View.GONE
         h.progress.visibility = View.VISIBLE
         h.image.load(url) {

@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.imperialreader.data.cover.AutomaticCoverRefreshScheduler
@@ -24,7 +23,7 @@ import com.imperialreader.ui.library.LibraryFragment
 import com.imperialreader.ui.more.MoreFragment
 import com.imperialreader.ui.updates.UpdatesFragment
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private var refreshedThisProcess = false

@@ -48,18 +48,23 @@ abstract class HttpSource : Source {
             client.await(request).use { resp ->
                 val text = resp.body?.string().orEmpty()
                 val cfChallenge = resp.header("cf-mitigated")?.equals("challenge", ignoreCase = true) == true
+                val challengePage = text.contains("<title>Just a moment", ignoreCase = true) ||
+                    text.contains("cf-chl-", ignoreCase = true) ||
+                    text.contains("challenge-platform", ignoreCase = true)
+                if (cfChallenge || challengePage) {
+                    throw CloudflareException(request.url.toString())
+                }
                 if (!resp.isSuccessful) {
                     val cf = resp.header("Server")?.contains("cloudflare", true) == true ||
                         resp.header("cf-ray") != null
                     val browserCheck = resp.code == 503 &&
                         (text.contains("browser_check", ignoreCase = true) ||
                             text.contains("document.cookie", ignoreCase = true))
-                    if (cfChallenge || (cf && (resp.code == 403 || resp.code == 503)) || browserCheck) {
+                    if ((cf && (resp.code == 403 || resp.code == 503)) || browserCheck) {
                         throw CloudflareException(request.url.toString())
                     }
                     throw HttpStatusException(resp.code, request.url.toString())
                 }
-                if (cfChallenge) throw CloudflareException(request.url.toString())
                 text
             }
         }

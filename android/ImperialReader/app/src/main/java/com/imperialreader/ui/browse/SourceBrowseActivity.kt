@@ -8,7 +8,6 @@ import android.view.View
 import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SearchView
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
@@ -33,7 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
-class SourceBrowseActivity : AppCompatActivity() {
+class SourceBrowseActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_SOURCE = "source_id"

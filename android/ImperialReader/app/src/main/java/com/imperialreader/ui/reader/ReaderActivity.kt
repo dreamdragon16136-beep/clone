@@ -13,12 +13,12 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updatePadding
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -40,7 +40,7 @@ import kotlinx.coroutines.launch
 import java.io.IOException
 import kotlin.math.abs
 
-class ReaderActivity : AppCompatActivity() {
+class ReaderActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_CHAPTER = "chapter_id"
@@ -78,6 +78,17 @@ class ReaderActivity : AppCompatActivity() {
     private var restoring = false
     private var chapterTransitionActive = false
     private var loadJob: Job? = null
+    private var pendingSaveBitmap: android.graphics.Bitmap? = null
+    private val requestGalleryPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val bitmap = pendingSaveBitmap
+            pendingSaveBitmap = null
+            if (granted && bitmap != null) savePageBitmap(bitmap)
+            else if (!granted) {
+                bitmap?.recycle()
+                toast("Storage permission is needed to save pages")
+            }
+        }
 
     private val pagerMode get() = mode != AppPrefs.READER_VERTICAL
     private val rtl get() = mode == AppPrefs.READER_RTL
@@ -272,7 +283,13 @@ class ReaderActivity : AppCompatActivity() {
         progressBar.visibility = View.GONE
         errorView.visibility = View.GONE
         restoring = true
-        val adapter = PageAdapter(headers, webtoon = !pagerMode)
+        val adapter = PageAdapter(headers, webtoon = !pagerMode, onSavePage = { image, _ ->
+            if (image.drawable == null) toast("Wait for the page to finish loading before saving it")
+            else GalleryPageSaver.captureDisplayedPage(this, image) { bitmap ->
+                if (bitmap == null) toast("Could not capture the displayed page")
+                else confirmSavePage(bitmap)
+            }
+        })
         adapter.pages = pages
 
         if (pagerMode) {
@@ -300,6 +317,38 @@ class ReaderActivity : AppCompatActivity() {
         updatePageUi(start)
         webtoon.post { updateNextChapterPrompt() }
         root.postDelayed({ restoring = false }, 500)
+    }
+
+    private fun savePageBitmap(bitmap: android.graphics.Bitmap) {
+        lifecycleScope.launch {
+            try {
+                GalleryPageSaver.save(this@ReaderActivity, bitmap)
+                toast("Page saved to Pictures/ImperialReader")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast("Couldn't save page: ${e.message}")
+            } finally {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    private fun confirmSavePage(bitmap: android.graphics.Bitmap) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Save page to gallery?")
+            .setMessage("Save this page to Pictures/ImperialReader?")
+            .setNegativeButton("Cancel") { _, _ -> bitmap.recycle() }
+            .setOnCancelListener { bitmap.recycle() }
+            .setPositiveButton("Save") { _, _ ->
+                if (GalleryPageSaver.hasLegacyPermission(this)) savePageBitmap(bitmap)
+                else {
+                    pendingSaveBitmap?.recycle()
+                    pendingSaveBitmap = bitmap
+                    requestGalleryPermission.launch(GalleryPageSaver.WRITE_PERMISSION)
+                }
+            }
+            .show()
     }
 
     // ------------------------------------------------------------------ paging

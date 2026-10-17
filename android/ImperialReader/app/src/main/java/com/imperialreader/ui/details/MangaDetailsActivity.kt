@@ -12,7 +12,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.PopupMenu
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -52,7 +51,7 @@ import kotlinx.coroutines.launch
 
 data class ChapterRow(val chapter: ChapterEntity, val progress: Int?, val selected: Boolean = false)
 
-class MangaDetailsActivity : AppCompatActivity() {
+class MangaDetailsActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_ID = "manga_id"
@@ -102,12 +101,24 @@ class MangaDetailsActivity : AppCompatActivity() {
                 else startActivity(ReaderActivity.intent(this, row.chapter.id))
             },
             onLong = { row, anchor ->
-                if (chapterSelectionMode) {
-                    chapterSelectionAnchorId?.let { selectChapterRange(it, row.chapter.id) }
-                        ?: toggleChapterSelection(row.chapter.id)
+                val wasInSelectionMode = chapterSelectionMode
+                if (wasInSelectionMode) {
+                    if (row.chapter.id in selectedChapterIds) {
+                        showChapterMenu(row, anchor)
+                    } else {
+                        chapterSelectionAnchorId?.let { selectChapterRange(it, row.chapter.id) }
+                            ?: toggleChapterSelection(row.chapter.id)
+                    }
+                } else {
+                    chapterSelectionMode = true
+                    selectedChapterIds.clear()
+                    selectedChapterIds.add(row.chapter.id)
+                    chapterSelectionAnchorId = row.chapter.id
+                    renderChapterSelection()
                 }
-                else showChapterMenu(row, anchor)
+                if (!wasInSelectionMode && row.chapter.read) showChapterMenu(row, anchor)
             },
+            onOptions = { row, anchor -> showChapterMenu(row, anchor) },
             onDownload = { row -> onDownloadClick(row) }
         )
         recycler.layoutManager = LinearLayoutManager(this)
@@ -440,24 +451,32 @@ class MangaDetailsActivity : AppCompatActivity() {
         val c = row.chapter
         val dao = app.db.chapterDao()
         val popup = PopupMenu(this, anchor)
-        popup.menu.add(0, 0, 0, "Select for bulk actions")
-        popup.menu.add(0, 1, 1, if (c.read) "Mark as unread" else "Mark as read")
-        popup.menu.add(0, 2, 2, "Mark previous as read")
-        popup.menu.add(0, 3, 3, if (c.bookmark) "Remove bookmark" else "Bookmark")
+        popup.menu.add(0, 1, 1, "Mark as read")
+        popup.menu.add(0, 4, 2, "Mark as unread")
+        popup.menu.add(0, 5, 3, "Select all chapters")
+        popup.menu.add(0, 6, 4, "Cancel selection")
+        popup.menu.add(0, 2, 5, "Mark previous as read")
+        popup.menu.add(0, 3, 6, if (c.bookmark) "Remove bookmark" else "Bookmark")
+        popup.menu.findItem(6).isVisible = chapterSelectionMode
         popup.setOnMenuItemClickListener { item ->
-            if (item.itemId == 0) {
+            if (item.itemId == 5) {
                 chapterSelectionMode = true
-                selectedChapterIds.add(c.id)
-                if (chapterSelectionAnchorId == null) chapterSelectionAnchorId = c.id
-                renderChapterSelection()
+                selectedChapterIds.clear()
+                selectAllChapters()
+                return@setOnMenuItemClickListener true
+            }
+            if (item.itemId == 6) {
+                clearChapterSelection()
                 return@setOnMenuItemClickListener true
             }
             lifecycleScope.launch {
                 when (item.itemId) {
-                    1 -> dao.setRead(listOf(c.id), !c.read)
+                    1 -> dao.setRead(if (chapterSelectionMode) selectedChapterIds.toList() else listOf(c.id), true)
+                    4 -> dao.setRead(if (chapterSelectionMode) selectedChapterIds.toList() else listOf(c.id), false)
                     2 -> dao.setRead(rows.map { it.chapter }.filter { it.sourceOrder > c.sourceOrder }.map { it.id }, true)
                     3 -> dao.setBookmark(c.id, !c.bookmark)
                 }
+                if (chapterSelectionMode && item.itemId in setOf(1, 4)) clearChapterSelection()
             }
             true
         }
@@ -536,6 +555,7 @@ class MangaDetailsActivity : AppCompatActivity() {
     private inner class ChapterAdapter(
         val onClick: (ChapterRow) -> Unit,
         val onLong: (ChapterRow, View) -> Unit,
+        val onOptions: (ChapterRow, View) -> Unit,
         val onDownload: (ChapterRow) -> Unit
     ) : ListAdapter<ChapterRow, ChapterAdapter.VH>(Diff) {
 
@@ -546,6 +566,7 @@ class MangaDetailsActivity : AppCompatActivity() {
             val frame: FrameLayout = v.findViewById(R.id.chDlFrame)
             val icon: ImageView = v.findViewById(R.id.chDlIcon)
             val progress: CircularProgressIndicator = v.findViewById(R.id.chDlProgress)
+            val options: TextView = v.findViewById(R.id.chOptions)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
@@ -576,6 +597,7 @@ class MangaDetailsActivity : AppCompatActivity() {
                 h.icon.alpha = if (c.downloaded) 1f else 0.6f
             }
             h.frame.setOnClickListener { onDownload(row) }
+            h.options.setOnClickListener { onOptions(row, h.itemView) }
             h.itemView.setOnClickListener { onClick(row) }
             h.itemView.setOnLongClickListener { onLong(row, h.itemView); true }
         }

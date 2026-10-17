@@ -80,7 +80,16 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
             },
             onLongClick = { item ->
                 val id = item.tag as Long
-                if (selectionMode) toggleSelection(id) else showItemMenu(id, item.title)
+                if (selectionMode) {
+                    if (id in selectedIds) showItemMenu(id, item.title)
+                    else toggleSelection(id)
+                } else {
+                    selectionMode = true
+                    selectedIds.clear()
+                    selectedIds.add(id)
+                    updateSelectionMenu()
+                    tick.value = tick.value + 1
+                }
             }
         )
         recycler.layoutManager = GridLayoutManager(requireContext(), prefs.libraryColumns)
@@ -481,38 +490,54 @@ class LibraryFragment : Fragment(R.layout.fragment_library) {
 
     private fun showItemMenu(mangaId: Long, title: String) {
         val ctx = requireContext()
-        val options = arrayOf("Select for bulk actions", "Mark as read", "Mark as unread", "Change category", "Remove from library")
+        val options = arrayOf(
+            "Mark as read",
+            "Mark as unread",
+            "Select all",
+            "Cancel selection",
+            "Change category",
+            "Remove from library"
+        )
         MaterialAlertDialogBuilder(ctx)
             .setTitle(title)
             .setItems(options) { _, which ->
-                if (which == 0) {
-                    selectionMode = true
-                    selectedIds.add(mangaId)
+                if (which == 2) {
+                    val ids = visibleItems.map { it.manga.id }
+                    selectedIds.addAll(ids)
+                    selectionMode = selectedIds.isNotEmpty()
                     updateSelectionMenu()
                     tick.value = tick.value + 1
+                    return@setItems
+                }
+                if (which == 3) {
+                    cancelSelection()
+                    return@setItems
+                }
+                val ids = selectedIds.toList().ifEmpty { listOf(mangaId) }
+                if (which == 0 || which == 1) {
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        val dao = ctx.app.db.chapterDao()
+                        ids.chunked(400).forEach { dao.setReadForManga(it, which == 0) }
+                        ctx.toast("Marked ${ids.size} entr${if (ids.size == 1) "y" else "ies"} as ${if (which == 0) "read" else "unread"}")
+                        cancelSelection()
+                    }
                     return@setItems
                 }
                 viewLifecycleOwner.lifecycleScope.launch {
                     val db = ctx.app.db
                     val manga = db.mangaDao().getById(mangaId) ?: return@launch
                     when (which) {
-                        1 -> {
-                            db.chapterDao().setReadForManga(mangaId, true)
-                            ctx.toast("Marked all chapters as read")
+                        4 -> {
+                            val picked = LibraryActions.chooseCategory(ctx, manga.categoryId) ?: return@launch
+                            ids.chunked(400).forEach { db.mangaDao().setCategory(it, picked) }
+                            cancelSelection()
                         }
-                        2 -> {
-                            db.chapterDao().setReadForManga(mangaId, false)
-                            ctx.toast("Marked all chapters as unread")
-                        }
-                        3 -> {
-                            val picked = LibraryActions.chooseCategory(ctx, manga.categoryId)
-                            if (picked != null) db.mangaDao().setCategory(mangaId, picked)
-                        }
-                        4 -> showRemoveOptions(1) { deleteDownloads ->
+                        5 -> showRemoveOptions(ids.size) { deleteDownloads ->
                             viewLifecycleOwner.lifecycleScope.launch {
                                 try {
-                                    removeEntries(listOf(mangaId), deleteDownloads)
-                                    ctx.toast("Removed from library")
+                                    removeEntries(ids, deleteDownloads)
+                                    ctx.toast("Removed ${ids.size} entr${if (ids.size == 1) "y" else "ies"} from library")
+                                    cancelSelection()
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {

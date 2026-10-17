@@ -16,7 +16,6 @@ import android.webkit.WebViewClient
 import android.webkit.JavascriptInterface
 import android.widget.TextView
 import android.widget.SeekBar
-import androidx.appcompat.app.AppCompatActivity
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.appbar.MaterialToolbar
@@ -47,7 +46,7 @@ import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.abs
 
 /** Minimal EPUB reader: unzips to cache, follows the OPF spine and shows each section in a WebView. */
-class EpubReaderActivity : AppCompatActivity() {
+class EpubReaderActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_CHAPTER = "chapter_id"
@@ -82,6 +81,9 @@ class EpubReaderActivity : AppCompatActivity() {
     private var ttsReady = false
     private var speaking = false
     private var resumeSpeaking = false
+    private var touchStartY = 0f
+    private var touchStartedNearEnd = false
+    private var pendingNextChapterSwipe = false
     private lateinit var gesture: GestureDetector
     private lateinit var btnTts: com.google.android.material.button.MaterialButton
     private lateinit var btnReadingMode: com.google.android.material.button.MaterialButton
@@ -253,7 +255,7 @@ class EpubReaderActivity : AppCompatActivity() {
         web.settings.textZoom = zoom
         web.addJavascriptInterface(object {
             @JavascriptInterface
-            fun onProgress(page: Int, total: Int) {
+            fun onProgress(page: Int, total: Int, atEnd: Boolean) {
                 runOnUiThread {
                     val currentBook = book ?: return@runOnUiThread
                     if (isFinishing || isDestroyed || total <= 0) return@runOnUiThread
@@ -265,11 +267,11 @@ class EpubReaderActivity : AppCompatActivity() {
                     }
                     txtSection.text = progressDescription(page, total, currentBook.titles[index])
                     val storedPage = if (currentBook.spine.size == 1) page else index
-                    val atEnd = index == currentBook.spine.lastIndex && page >= total - 1
+                    val chapterComplete = index == currentBook.spine.lastIndex && atEnd
                     lifecycleScope.launch {
                         val dao = app.db.chapterDao()
                         val current = dao.getById(chapterId) ?: return@launch
-                        dao.saveProgress(chapterId, storedPage, current.read || atEnd)
+                        dao.saveProgress(chapterId, storedPage, current.read || chapterComplete)
                     }
                 }
             }
@@ -328,8 +330,29 @@ class EpubReaderActivity : AppCompatActivity() {
                 return true
             }
         })
-        web.setOnTouchListener { _, event ->
+        web.setOnTouchListener { view, event ->
             gesture.onTouchEvent(event)
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                pendingNextChapterSwipe = false
+                touchStartY = event.y
+                val contentHeight = (web.contentHeight * web.scale).toInt()
+                touchStartedNearEnd = contentHeight - (web.scrollY + web.height) <= web.height
+            } else if (event.action == MotionEvent.ACTION_UP && !horizontalReading &&
+                touchStartedNearEnd && touchStartY - event.y > 48 * resources.displayMetrics.density &&
+                manga?.let { BookSources.get(it.source)?.isWebNovel } == true &&
+                epubChapterIndex in epubChapters.indices && epubChapterIndex < epubChapters.lastIndex
+            ) {
+                pendingNextChapterSwipe = true
+                view.postDelayed({
+                    if (pendingNextChapterSwipe) {
+                        pendingNextChapterSwipe = false
+                        val contentHeight = (web.contentHeight * web.scale).toInt()
+                        if (contentHeight - (web.scrollY + web.height) <= 2) {
+                            openAdjacentChapter(epubChapterIndex + 1, 0)
+                        }
+                    }
+                }, 180)
+            }
             horizontalReading
         }
 
@@ -393,9 +416,11 @@ class EpubReaderActivity : AppCompatActivity() {
         view.evaluateJavascript(
             "(function(){if(window.__irProgressTimer)clearInterval(window.__irProgressTimer);" +
                 "var root=document.documentElement,body=document.body,last=-1,totalLast=-1;" +
-                "function report(){var dim=Math.max(1,$dimension);var total=Math.max(1,Math.ceil($extent/dim));" +
-                "var page=Math.min(total-1,Math.max(0,Math.floor(($offset)/dim)));" +
-                "if(page!==last||total!==totalLast){last=page;totalLast=total;ImperialReaderProgress.onProgress(page,total);}}" +
+                "function report(){var dim=Math.max(1,$dimension),extent=$extent,offset=$offset;" +
+                "var total=Math.max(1,Math.ceil(extent/dim));var atEnd=offset+dim>=extent-2;" +
+                "var page=Math.min(total-1,Math.max(0,atEnd?total-1:Math.floor(offset/dim)));" +
+                "if(page!==last||total!==totalLast){last=page;totalLast=total;" +
+                "ImperialReaderProgress.onProgress(page,total,${index == book?.spine?.lastIndex});}}" +
                 "window.__irProgressTimer=setInterval(report,300);report();})()",
             null
         )

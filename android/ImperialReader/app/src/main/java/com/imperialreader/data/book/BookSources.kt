@@ -732,7 +732,8 @@ private class LunarXSource : BookSource {
             val number = chapter.optInt("chapter", -1).takeIf { it >= 0 }
                 ?: return@mapNotNull null
             val title = chapter.optString("chapter_title").trim()
-                .ifBlank { "Chapter $number" }
+                .takeUnless { it.isBlank() || it.equals("unknown", ignoreCase = true) }
+                ?: "Chapter $number"
             NovelChapter(title, "$site/novel/$slug/$number")
         }.distinctBy { it.url }.sortedBy { chapter ->
             chapter.url.substringAfterLast('/').toIntOrNull() ?: Int.MAX_VALUE
@@ -753,13 +754,14 @@ private class LunarXSource : BookSource {
         val contentSelectors = listOf(
             ".chapter-content", ".chapter__content", ".novel-content", ".chapter-body",
             ".chapter-text", ".reader-content", ".novel-reader", ".reading-content",
-            ".text-content", ".prose", "[class*=chapter-text]", "[id*=chapter-text]",
+            ".text-content", ".chapter-content__text", ".chapter__body", ".chapter-inner",
+            ".reading-area", ".novel__content", ".prose", "[class*=chapter-text]", "[id*=chapter-text]",
             "[class*=reader-content]", "[id*=reader-content]"
         )
         val specificContent = contentSelectors.flatMap { doc.select(it).toList() }.distinct()
-        val candidates = (specificContent.ifEmpty {
-            doc.select("article, main, section").toList()
-        }).map { candidate ->
+        val candidates = (specificContent + doc.select(
+            "article, main, section, .entry-content, [class*=chapter], [id*=chapter]"
+        ).toList()).distinct().map { candidate ->
             candidate.clone().apply {
                 select("script, style, noscript, iframe, nav, header, footer, aside, form, " +
                     "[class*=advert], [id*=advert], [class*=comment], [id*=comment], " +
@@ -767,9 +769,9 @@ private class LunarXSource : BookSource {
             }
         }
         val content = candidates.maxByOrNull { candidate ->
-            candidate.select("p").sumOf { it.text().length }
+            candidate.text().length
         } ?: throw IOException("LunarX chapter text was not found")
-        val readableText = content.select("p").joinToString(" ") { it.text() }.trim()
+        val readableText = content.text().trim()
         if (readableText.length < 80) {
             throw IOException("LunarX returned an empty chapter")
         }
@@ -846,7 +848,9 @@ private class LunoxScansSource : BookSource {
     override suspend fun chapters(item: BookItem): List<NovelChapter> {
         val url = seriesUrl(item.id) ?: throw IOException("Invalid Lunox Scans series address")
         val doc = Jsoup.parse(fetchHtml(url), url)
-        val chapters = doc.select("a[href]").mapNotNull { link ->
+        val chapterList = doc.selectFirst(".lunox-chapters-grid")
+            ?: throw IOException("Lunox Scans did not provide its chapter list")
+        val chapters = chapterList.select("a[href]").mapNotNull { link ->
             val chapterUrl = chapterUrl(link.absUrl("href")) ?: return@mapNotNull null
             val title = sequenceOf(
                 link.attr("title"),
@@ -872,8 +876,8 @@ private class LunoxScansSource : BookSource {
             ?: throw IOException("Lunox Scans chapter text was not found")
         content.select("script, style, noscript, iframe, nav, header, footer, aside, form, " +
             ".chapter-navigation, .chapter-nav, .login-required, .chapter-coin").remove()
-        val paragraphs = content.select("p").joinToString(" ") { it.text() }.trim()
-        if (paragraphs.length < 100) throw IOException("Lunox Scans returned an empty chapter")
+        val readableText = content.text().trim()
+        if (readableText.length < 100) throw IOException("Lunox Scans returned an empty chapter")
         return content.html()
     }
 

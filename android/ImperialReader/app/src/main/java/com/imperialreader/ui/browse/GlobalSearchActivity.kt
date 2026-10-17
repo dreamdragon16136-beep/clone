@@ -14,7 +14,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.ConcatAdapter
 import androidx.recyclerview.widget.DiffUtil
@@ -97,7 +96,7 @@ private data class TitleGroup(
  * Default view: each TITLE once, with the chapters of all sources merged (most up-to-date count).
  * Untick "Combine" to see the per-source rows instead.
  */
-class GlobalSearchActivity : AppCompatActivity() {
+class GlobalSearchActivity : androidx.appcompat.app.AppCompatActivity() {
 
     companion object {
         private const val EXTRA_QUERY = "query"
