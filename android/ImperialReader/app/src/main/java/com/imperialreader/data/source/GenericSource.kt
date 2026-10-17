@@ -193,6 +193,58 @@ class GenericSource(
         throw last ?: IOException("Search failed on this site")
     }
 
+    override suspend fun searchByAuthor(query: String, page: Int): MangasPage {
+        val slug = query.trim().lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-')
+        if (slug.isBlank()) return MangasPage(emptyList(), false)
+        val patterns = listOf(
+            "/search?author={q}&page={p}",
+            "/search?artist={q}&page={p}",
+            "/search?keyword={q}&author={q}&page={p}",
+            "/author/{q}/page/{p}",
+            "/author/{q}?page={p}",
+            "/artist/{q}/page/{p}",
+            "/artist/{q}?page={p}"
+        )
+        for (pattern in patterns) {
+            try {
+                val url = baseUrl.trimEnd('/') + pattern
+                    .replace("{q}", enc(slug))
+                    .replace("{p}", page.toString())
+                val candidates = parseCards(doc(url))
+                if (candidates.isEmpty()) continue
+                val limiter = kotlinx.coroutines.sync.Semaphore(4)
+                val matches = coroutineScope {
+                    candidates.map { candidate ->
+                        async {
+                            try {
+                                limiter.withPermit {
+                                    getMangaDetails(candidate).takeIf { manga ->
+                                        listOfNotNull(manga.author, manga.artist)
+                                            .any { it.contains(query, ignoreCase = true) }
+                                    }
+                                }
+                            } catch (e: CloudflareException) {
+                                throw e
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }.awaitAll().filterNotNull()
+                }
+                if (matches.isNotEmpty()) return MangasPage(matches, candidates.size >= 20)
+            } catch (e: CloudflareException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                continue
+            }
+        }
+        return super<HttpSource>.searchByAuthor(query, page)
+    }
+
     override suspend fun searchByGenre(query: String, page: Int): MangasPage {
         val slug = query.trim().lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-')
         if (slug.isBlank()) return MangasPage(emptyList(), false)

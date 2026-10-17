@@ -36,6 +36,22 @@ class MangaDexSource : HttpSource() {
         list("$api/manga?limit=$pageSize&offset=${(page - 1) * pageSize}&includes[]=cover_art" +
             "&title=${enc(query)}&order[relevance]=desc&availableTranslatedLanguage[]=en$rating")
 
+    override suspend fun searchByAuthor(query: String, page: Int): MangasPage {
+        val authors = JSONObject(getString("$api/author?limit=10&name=${enc(query)}"))
+            .optJSONArray("data") ?: JSONArray()
+        val authorIds = (0 until authors.length()).mapNotNull { index ->
+            val author = authors.optJSONObject(index) ?: return@mapNotNull null
+            val name = author.optJSONObject("attributes")?.optString("name").orEmpty()
+            if (!name.contains(query, ignoreCase = true)) null else author.optString("id").ifBlank { null }
+        }.distinct().take(3)
+        if (authorIds.isEmpty()) return MangasPage(emptyList(), false)
+        val authorFilter = authorIds.joinToString("&") { "authors[]=${enc(it)}" }
+        return list(
+            "$api/manga?limit=$pageSize&offset=${(page - 1) * pageSize}&includes[]=cover_art" +
+                "&$authorFilter&order[relevance]=desc&availableTranslatedLanguage[]=en$rating"
+        )
+    }
+
     override suspend fun searchByGenre(query: String, page: Int): MangasPage {
         val tags = JSONObject(getString("$api/manga/tag")).optJSONArray("data") ?: JSONArray()
         val matches = (0 until tags.length()).mapNotNull { index ->

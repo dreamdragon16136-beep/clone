@@ -11,6 +11,7 @@ class SourceManager(private val context: Context) {
      */
     private val builtin: List<Source> = listOf(
         MangaDexSource(),
+        MangaKSource(),
         MangaKatanaSource(),
         MangaPillSource(),
         MangaBuddySource(),
@@ -19,6 +20,8 @@ class SourceManager(private val context: Context) {
         NhentaiXxxSource(),
         NineHentaiSource(),
         ImhentaiXxxSource(),
+        DoujinsSource(),
+        EHentaiSource(),
         TapasSource(),
         ComicHubFreeSource(),
         ReadComicsOnlineSource(),

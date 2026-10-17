@@ -335,6 +335,9 @@ class GlobalSearchActivity : AppCompatActivity() {
         }
     }
 
+    private fun isAuthorQuery(query: String): Boolean =
+        query.trim().split(Regex("""\s+""")).count { word -> word.any(Char::isLetter) } >= 2
+
     // ---------------------------------------------------------------- searching
 
     private fun runSearch(q: String) {
@@ -357,6 +360,26 @@ class GlobalSearchActivity : AppCompatActivity() {
             sprite.start()
             try {
                 searchAll(q, combine)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val message = "Search failed: ${e.message ?: "unexpected error"}"
+                if (sections.value.isEmpty()) {
+                    sections.value = listOf(
+                        SourceResult(
+                            sourceId = "search-error",
+                            sourceName = "Global Search",
+                            loading = false,
+                            error = message
+                        )
+                    )
+                } else {
+                    sections.update { results ->
+                        results.map { result ->
+                            if (result.loading) result.copy(loading = false, error = message) else result
+                        }
+                    }
+                }
             } finally {
                 sprite.stop()
             }
@@ -425,10 +448,24 @@ class GlobalSearchActivity : AppCompatActivity() {
                                     emptyList<SManga>() to "Genre search failed: ${e.message ?: "source error"}"
                                 }
                             } else null
+                            val authorLookup = if (isAuthorQuery(q)) async {
+                                try {
+                                    withTimeout(10_000L) {
+                                        searchSem.withPermit { s.searchByAuthor(q, 1).mangas to null }
+                                    }
+                                } catch (e: TimeoutCancellationException) {
+                                    emptyList<SManga>() to "Author search timed out"
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    emptyList<SManga>() to "Author search failed: ${e.message ?: "source error"}"
+                                }
+                            } else null
                             val (titles, titleError) = titleLookup.await()
                             val (genres, genreError) = genreLookup?.await() ?: (emptyList<SManga>() to null)
-                            val titleUrls = titles.mapTo(HashSet()) { it.url }
-                            val candidates = (titles + genres)
+                            val (authors, authorError) = authorLookup?.await() ?: (emptyList<SManga>() to null)
+                            val titleUrls = (titles + authors).mapTo(HashSet()) { it.url }
+                            val candidates = (titles + genres + authors)
                                 .distinctBy { it.url }
                                 .sortedWith(
                                     compareBy<SManga> { searchRelevance(it.title, q) }
@@ -438,7 +475,8 @@ class GlobalSearchActivity : AppCompatActivity() {
                                 .take(30)
                             val sourceError = listOfNotNull(
                                 titleError?.let { "Title search failed: $it" },
-                                genreError
+                                genreError,
+                                authorError
                             ).joinToString("\n").ifBlank { null }
                             sourceError?.let { error ->
                                 update(s.id) { it.copy(error = error) }
@@ -517,10 +555,21 @@ class GlobalSearchActivity : AppCompatActivity() {
             sources.forEach { source ->
                 launch {
                     val result = try {
-                        val titles = withTimeout(8_000L) {
-                            sem.withPermit {
-                                if (q.isBlank()) source.popular(1) else source.search(q, 1)
+                        var titleError: String? = null
+                        val titles = try {
+                            withTimeout(8_000L) {
+                                sem.withPermit {
+                                    if (q.isBlank()) source.popular(1) else source.search(q, 1)
+                                }
                             }
+                        } catch (e: TimeoutCancellationException) {
+                            titleError = "Title search timed out"
+                            emptyList()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            titleError = e.message ?: "Title search failed"
+                            emptyList()
                         }
                         var genreError: String? = null
                         val genres = if (q.length >= 2) {
@@ -538,10 +587,30 @@ class GlobalSearchActivity : AppCompatActivity() {
                                 emptyList()
                             }
                         } else emptyList()
-                        val candidateItems = (titles + genres).distinctBy { it.key }.take(15)
+                        var authorError: String? = null
+                        val authors = if (isAuthorQuery(q)) {
+                            try {
+                                withTimeout(8_000L) {
+                                    sem.withPermit { source.searchByAuthor(q, 1) }
+                                }
+                            } catch (e: TimeoutCancellationException) {
+                                authorError = "Author search timed out"
+                                emptyList()
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                authorError = e.message ?: "Author search failed"
+                                emptyList()
+                            }
+                        } else emptyList()
+                        val candidateItems = (titles + genres + authors).distinctBy { it.key }.take(15)
                         val sourceName = source.name
                         if (!hasSearchFilters()) {
-                            candidateItems to genreError?.let { "$sourceName genre search: $it" }
+                            candidateItems to listOfNotNull(
+                                titleError?.let { "$sourceName title search: $it" },
+                                genreError?.let { "$sourceName genre search: $it" },
+                                authorError?.let { "$sourceName author search: $it" }
+                            ).joinToString("\n").ifBlank { null }
                         } else {
                             var failures = 0
                             val books = candidateItems.mapNotNull { item ->
@@ -561,7 +630,9 @@ class GlobalSearchActivity : AppCompatActivity() {
                                 "${source.name}: $failures result(s) could not be checked against metadata filters"
                             } else null
                             books to listOfNotNull(
+                                titleError?.let { "$sourceName title search: $it" },
                                 genreError?.let { "$sourceName genre search: $it" },
+                                authorError?.let { "$sourceName author search: $it" },
                                 metadataError
                             ).joinToString("\n").ifBlank { null }
                         }

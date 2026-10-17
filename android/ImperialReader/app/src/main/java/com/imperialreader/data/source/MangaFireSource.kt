@@ -24,37 +24,78 @@ class MangaFireSource : HttpSource() {
     override val name = "MangaFire"
     override val lang = "en"
     override val baseUrl = "https://mangafire.to"
+    override val extraHeaders: Map<String, String>
+        get() = super.extraHeaders + mapOf(
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+            "Accept-Language" to "en-US,en;q=0.9"
+        )
 
     override suspend fun getPopular(page: Int): MangasPage =
-        list("$baseUrl/filter?sort=most_viewed&language%5B%5D=en&page=${page.coerceAtLeast(1)}", page)
+        list(
+            listOf(
+                "$baseUrl/filter?sort=most_viewed&page=${page.coerceAtLeast(1)}",
+                "$baseUrl/filter?sort=most_viewed&language%5B%5D=en&page=${page.coerceAtLeast(1)}"
+            ),
+            page
+        )
 
     override suspend fun getLatest(page: Int): MangasPage =
-        list("$baseUrl/filter?sort=recently_updated&language%5B%5D=en&page=${page.coerceAtLeast(1)}", page)
+        list(
+            listOf(
+                "$baseUrl/filter?sort=recently_updated&page=${page.coerceAtLeast(1)}",
+                "$baseUrl/filter?sort=recently_updated&language%5B%5D=en&page=${page.coerceAtLeast(1)}"
+            ),
+            page
+        )
 
     override suspend fun search(query: String, page: Int): MangasPage {
         val pageNumber = page.coerceAtLeast(1)
         val encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8.name()).replace("+", "%20")
         val vrf = MangaFireVrf.generate(query)
         return list(
-            "$baseUrl/filter?keyword=$encodedQuery&vrf=$vrf&sort=most_relevance&language%5B%5D=en&page=$pageNumber",
+            listOf(
+                "$baseUrl/filter?keyword=$encodedQuery&vrf=$vrf&sort=most_relevance&language%5B%5D=en&page=$pageNumber",
+                "$baseUrl/filter?keyword=$encodedQuery&sort=most_relevance&language%5B%5D=en&page=$pageNumber",
+                "$baseUrl/filter?keyword=$encodedQuery&sort=most_relevance&page=$pageNumber"
+            ),
             pageNumber
         )
     }
 
-    private suspend fun list(url: String, page: Int): MangasPage {
-        val doc = Jsoup.parse(getString(url), url)
-        val mangas = doc.select(".original .unit .inner, .unit .inner").mapNotNull { card ->
-            val link = card.selectFirst(".info > a[href], .info a[href], a.name[href], a[href*=/manga/]")
-                ?: return@mapNotNull null
-            parseManga(link, card.selectFirst("img"))
-        }.ifEmpty {
-            doc.select("a[href*=/manga/]").mapNotNull { link ->
-                parseManga(link, link.selectFirst("img") ?: link.parent()?.selectFirst("img"))
+    private suspend fun list(urls: List<String>, page: Int): MangasPage {
+        var lastError: Exception? = null
+        var successfulResponse = false
+        for (url in urls.distinct()) {
+            try {
+                val doc = Jsoup.parse(getString(url), url)
+                successfulResponse = true
+                val mangas = doc.select(
+                    ".original .unit .inner, .unit .inner, .flw-item, .manga-card, .item"
+                ).mapNotNull { card ->
+                    val link = card.selectFirst(
+                        ".info > a[href], .info a[href], a.name[href], a[href*=/manga/], a[href]"
+                    ) ?: return@mapNotNull null
+                    parseManga(link, card.selectFirst("img"))
+                }.ifEmpty {
+                    doc.select("a[href*=/manga/]").mapNotNull { link ->
+                        parseManga(link, link.selectFirst("img") ?: link.parent()?.selectFirst("img"))
+                    }
+                }.distinctBy { it.url }
+                if (mangas.isNotEmpty()) {
+                    val hasNext = doc.selectFirst(
+                        ".page-item.active + .page-item .page-link, a[rel=next], .pagination a[href]"
+                    ) != null
+                    return MangasPage(mangas, hasNext)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
             }
-        }.distinctBy { it.url }
-        if (mangas.isEmpty() && page <= 1) throw IOException("MangaFire returned no readable titles")
-        val hasNext = doc.selectFirst(".page-item.active + .page-item .page-link, a[rel=next]") != null
-        return MangasPage(mangas, hasNext && mangas.isNotEmpty())
+        }
+        if (successfulResponse && page > 1) return MangasPage(emptyList(), false)
+        throw lastError ?: IOException("MangaFire returned no readable titles")
     }
 
     private fun parseManga(link: Element, image: Element?): SManga? {

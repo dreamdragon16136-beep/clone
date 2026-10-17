@@ -46,6 +46,29 @@ interface Source {
     suspend fun getLatest(page: Int): MangasPage
     suspend fun search(query: String, page: Int): MangasPage
     suspend fun getMangaDetails(manga: SManga): SManga
+    suspend fun searchByAuthor(query: String, page: Int): MangasPage {
+        val results = search(query, page)
+        val matches = coroutineScope {
+            val limiter = Semaphore(4)
+            results.mangas.map { candidate ->
+                async {
+                    try {
+                        limiter.withPermit {
+                            getMangaDetails(candidate).takeIf { item ->
+                                listOfNotNull(item.author, item.artist)
+                                    .any { it.contains(query, ignoreCase = true) }
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+        return MangasPage(matches, results.hasNextPage && matches.isNotEmpty())
+    }
     suspend fun searchByGenre(query: String, page: Int): MangasPage {
         val popular = getPopular(page)
         val matches = coroutineScope {

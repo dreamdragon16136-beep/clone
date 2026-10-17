@@ -21,6 +21,9 @@ abstract class HttpSource : Source {
 
     override fun imageHeaders(): Map<String, String> = extraHeaders
 
+    override suspend fun searchByAuthor(query: String, page: Int): MangasPage =
+        super<Source>.searchByAuthor(query, page)
+
     protected suspend fun getString(url: String, headers: Map<String, String> = emptyMap()): String =
         execute(Request.Builder().url(url), headers)
 
